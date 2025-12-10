@@ -30,7 +30,7 @@ class SkySignalAgentClass {
 	constructor() {
 		this.config = {
 			apiKey: null,
-			endpoint: process.env.SKYSIGNAL_ENDPOINT || "https://skysignal.app",
+			endpoint: process.env.SKYSIGNAL_ENDPOINT || "https://dash.skysignal.app",
 			enabled: true,
 			debug: false, // Debug mode for verbose console logging
 			batchSize: 50,

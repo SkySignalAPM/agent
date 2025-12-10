@@ -124,7 +124,7 @@ Meteor.startup(() => {
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `apiKey` | String | *required* | Your SkySignal API key (sk_ prefix) |
-| `endpoint` | String | `https://skysignal.app` | SkySignal API endpoint |
+| `endpoint` | String | `https://dash.skysignal.app` | SkySignal API endpoint |
 | `enabled` | Boolean | `true` | Enable/disable the agent |
 
 ### Host & Version Identification
@@ -362,7 +362,7 @@ RUM monitoring **auto-initializes** from your Meteor settings.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `publicKey` | String | *required* | SkySignal Public Key (pk_ prefix) - Safe for client-side use |
-| `endpoint` | String | (same origin) | Base URL of SkySignal API (e.g., `http://localhost:3000` or `https://skysignal.app`) |
+| `endpoint` | String | (same origin) | Base URL of SkySignal API (e.g., `http://localhost:3000` or `https://dash.skysignal.app`) |
 | `rum.enabled` | Boolean | `true` | Enable/disable RUM collection |
 | `rum.sampleRate` | Number | Auto | Sample rate (0-1). Auto: 100% for localhost, 50% for production |
 | `rum.debug` | Boolean | `false` | Enable console logging for debugging |
