@@ -546,7 +546,7 @@ Main agent singleton instance.
 
 ## Support
 
-- **Issues**: [https://github.com/skysignal/agent/issues](https://github.com/skysignal/agent/issues)
+- **Issues**: [https://github.com/skysignalapm/agent/issues](https://github.com/skysignalapm/agent/issues)
 
 ## Changelog
 
