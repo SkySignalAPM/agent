@@ -550,6 +550,9 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.7 (Bug Fixes)
+- Increased default timeout from 3000ms to 15000ms for API requests to handle slow networks
+
 ### v1.0.4 (Rollback)
 - Reverted to Meteor 2.16+ compatibility due to Node.js version issues with older Meteor versions (Only Meteor 3.x supports Node 20+)
 
