@@ -8,9 +8,10 @@ Package.describe({
 });
 
 Package.onUse(function (api) {
-  api.versionsFrom("2.16");
+  // Support both Meteor 2.x (2.16+) and Meteor 3.x
+  api.versionsFrom(["2.16", "3.0"]);
 
-  // Core dependencies
+  // Core dependencies - versions will be resolved based on the host app's Meteor version
   api.use(["ecmascript", "fetch", "check", "mongo", "tracker", "ddp", "accounts-base"]);
 
   // Server-side entry point
