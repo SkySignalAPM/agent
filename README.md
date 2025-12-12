@@ -550,6 +550,9 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.4 (Rollback)
+- Reverted to Meteor 2.16+ compatibility due to Node.js version issues with older Meteor versions (Only Meteor 3.x supports Node 20+)
+
 ### v1.0.3 (Bug Fixes)
 - Polyfill for `AbortSignal.timeout()` to support older Node.js versions
 

@@ -1,6 +1,6 @@
 Package.describe({
   name: "skysignal:agent",
-  version: "1.0.3",
+  version: "1.0.4",
   summary:
     "SkySignal APM agent for Meteor applications - monitors performance, errors, and system metrics",
   git: "https://github.com/skysignalapm/agent.git",
@@ -8,8 +8,8 @@ Package.describe({
 });
 
 Package.onUse(function (api) {
-  // Support both Meteor 2.x (2.16+) and Meteor 3.x
-  api.versionsFrom(["2.16", "3.0"]);
+  // Requires Meteor 3.x (Node 20+)
+  api.versionsFrom("3.0");
 
   // Core dependencies - versions will be resolved based on the host app's Meteor version
   api.use(["ecmascript", "fetch", "check", "mongo", "tracker", "ddp", "accounts-base"]);
