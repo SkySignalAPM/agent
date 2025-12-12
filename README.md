@@ -550,7 +550,13 @@ Main agent singleton instance.
 
 ## Changelog
 
-### v2.0.0 (Full APM Release)
+### v1.0.2 (Bug Fixes)
+- Updated Meteor version compatibility to 2.16
+
+### v1.0.1 (Bug Fixes)
+- Fixed incorrect default endpoint URL
+
+### v1.0.0 (Initial Release)
 
 - **Complete Method Tracing** - Automatic instrumentation with operation-level profiling
 - **MongoDB Query Analysis** - explain() support, N+1 detection, slow query analysis
@@ -564,9 +570,6 @@ Main agent singleton instance.
 - **App Version Tracking** - Auto-detection from package.json with manual override
 - **Build Hash Tracking** - Source map correlation via BUILD_HASH/GIT_SHA env vars
 - **Performance Safeguards** - Memory limits, request timeouts, batch retries
-
-### v1.1.0 (RUM Release)
-
 - **Real User Monitoring (RUM)** - Client-side Core Web Vitals collection (LCP, FID, CLS, TTFB, FCP, TTI)
 - **PageSpeed-Style Warnings** - Automatic performance threshold warnings in console
 - **SPA Route Tracking** - Automatic performance collection on every route change
@@ -576,9 +579,6 @@ Main agent singleton instance.
 - **Fire-and-Forget HTTP** - Reliable transmission with keepalive during page unload
 - **Configurable Sampling** - Auto-detects environment (100% dev, 50% prod) or manual configuration
 - **web-vitals Integration** - Uses Google's official Core Web Vitals library
-
-### v1.0.0 (Initial Release)
-
 - System metrics monitoring (CPU, memory, load average)
 - HTTP client with batching and auto-flush
 - Configurable collection intervals
