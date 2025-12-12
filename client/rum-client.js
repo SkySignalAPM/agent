@@ -317,12 +317,9 @@ if (typeof Meteor !== 'undefined' && Meteor.settings && Meteor.settings.public &
 
 		if (enabled && settings.publicKey) {
 			// Build endpoint URL
-			// If endpoint is configured, append /api/v1/rum to it
-			// Otherwise, use relative path (same origin)
-			let endpoint = '/api/v1/rum';
-			if (settings.endpoint) {
-				endpoint = `${settings.endpoint}/api/v1/rum`;
-			}
+			// If endpoint is configured, use it; otherwise default to SkySignal production
+			const baseEndpoint = settings.endpoint || 'https://dash.skysignal.app';
+			const endpoint = `${baseEndpoint}/api/v1/rum`;
 
 			// NOTE: No sampleRate - sampling is controlled server-side via Configs.rum.samplingRate
 			// Client always collects 100% and server applies sampling based on site configuration
@@ -375,11 +372,9 @@ if (typeof Meteor !== 'undefined' && Meteor.settings && Meteor.settings.public &
 		const enabled = errorTrackingSettings.enabled !== false;
 
 		if (enabled && settings.publicKey) {
-			// Build endpoint URL
-			let endpoint = '/api/v1/errors';
-			if (settings.endpoint) {
-				endpoint = `${settings.endpoint}/api/v1/errors`;
-			}
+			// Build endpoint URL (default to SkySignal production)
+			const baseEndpoint = settings.endpoint || 'https://dash.skysignal.app';
+			const endpoint = `${baseEndpoint}/api/v1/errors`;
 
 			// Configure error tracker
 			const config = {
