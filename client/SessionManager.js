@@ -1,14 +1,49 @@
 /**
- * SessionManager
- * Manages user session tracking for RUM metrics
+ * SessionManager - Manages browser session tracking for Real User Monitoring (RUM).
  *
- * Sessions are:
- * - Stored in localStorage for persistence across page loads
- * - Valid for 30 minutes of inactivity
- * - Renewed on activity within the 30-minute window
- * - Unique per browser tab/window
+ * This class provides persistent session identification across page loads
+ * using localStorage. Sessions automatically expire after 30 minutes of
+ * inactivity but are renewed on user interaction.
+ *
+ * **Session Characteristics:**
+ * - Persisted in localStorage for cross-page-load tracking
+ * - 30-minute inactivity timeout (configurable via SESSION_DURATION)
+ * - Auto-renewed on user activity (click, scroll, keydown)
+ * - Activity renewal throttled to once per minute to minimize writes
+ * - Unique per browser (shared across tabs for the same origin)
+ *
+ * **Session ID Format:**
+ * `{timestamp}-{random}` (e.g., "1705420800000-abc123def")
+ *
+ * @class SessionManager
+ * @property {string} sessionId - The current session identifier
+ * @property {Date} sessionStart - When this SessionManager instance was created
+ *
+ * @example
+ * // Create session manager
+ * import SessionManager from 'meteor/skysignal:agent/client/SessionManager';
+ *
+ * const session = new SessionManager();
+ * console.log(`Session: ${session.getSessionId()}`);
+ *
+ * @example
+ * // Include session in RUM measurements
+ * const measurement = {
+ *   sessionId: session.getSessionId(),
+ *   timestamp: new Date(),
+ *   type: 'pageLoad',
+ *   metrics: { ... }
+ * };
+ * rumClient.addMeasurement(measurement);
  */
 export default class SessionManager {
+	/**
+	 * Create a new SessionManager instance.
+	 *
+	 * On construction, attempts to restore an existing session from localStorage.
+	 * If no valid session exists (expired or not found), creates a new one.
+	 * Sets up activity tracking to keep the session alive during user interaction.
+	 */
 	constructor() {
 		this.STORAGE_KEY = '_skysignal_session';
 		this.SESSION_DURATION = 30 * 60 * 1000; // 30 minutes
@@ -96,18 +131,87 @@ export default class SessionManager {
 	}
 
 	/**
-	 * Get the current session ID
-	 * @returns {String} Session ID
+	 * Get the current session ID.
+	 *
+	 * The session ID is a unique identifier for this user's browsing session.
+	 * It persists across page loads until 30 minutes of inactivity.
+	 *
+	 * @returns {string} Session ID in format "{timestamp}-{random}"
+	 *
+	 * @example
+	 * const sessionId = session.getSessionId();
+	 * // "1705420800000-abc123def"
+	 *
+	 * @example
+	 * // Include in RUM measurements
+	 * rumClient.addMeasurement({
+	 *   sessionId: session.getSessionId(),
+	 *   type: 'pageLoad',
+	 *   ...metrics
+	 * });
 	 */
 	getSessionId() {
 		return this.sessionId;
 	}
 
 	/**
-	 * Get the session start time
-	 * @returns {Date} Session start timestamp
+	 * Get the session start time.
+	 *
+	 * This is the time when this SessionManager instance was created,
+	 * not necessarily when the session ID was first generated (which
+	 * may have been on a previous page load).
+	 *
+	 * @returns {Date} Timestamp when this SessionManager was instantiated
+	 *
+	 * @example
+	 * const start = session.getSessionStart();
+	 * console.log(`Session started at: ${start.toISOString()}`);
 	 */
 	getSessionStart() {
 		return this.sessionStart;
+	}
+
+	/**
+	 * Get the duration of the current session in milliseconds.
+	 *
+	 * This measures time since this SessionManager instance was created,
+	 * which corresponds to when this page/tab was loaded.
+	 *
+	 * @returns {number} Session duration in milliseconds
+	 *
+	 * @example
+	 * const durationMs = session.getSessionDuration();
+	 * const durationSec = Math.round(durationMs / 1000);
+	 * console.log(`Session duration: ${durationSec} seconds`);
+	 */
+	getSessionDuration() {
+		return Date.now() - this.sessionStart.getTime();
+	}
+
+	/**
+	 * Check if the session is still active (not expired).
+	 *
+	 * A session is considered active if activity has occurred
+	 * within the last 30 minutes (SESSION_DURATION).
+	 *
+	 * @returns {boolean} True if session is active
+	 *
+	 * @example
+	 * if (session.isActive()) {
+	 *   rumClient.addMeasurement({ sessionId: session.getSessionId(), ... });
+	 * }
+	 */
+	isActive() {
+		try {
+			const stored = localStorage.getItem(this.STORAGE_KEY);
+			if (stored) {
+				const { timestamp } = JSON.parse(stored);
+				const age = Date.now() - timestamp;
+				return age < this.SESSION_DURATION;
+			}
+		} catch (e) {
+			// localStorage not available
+		}
+		return false;
 	}
 }

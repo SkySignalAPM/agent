@@ -14,17 +14,59 @@ import { mergeConfig } from "./lib/config.js";
 import { trackAsync, trackAsyncBatch, makeTrackable, makeTrackableClass } from "./lib/utils/trackAsync.js";
 
 /**
- * SkySignalAgent
- * Main APM agent for Meteor applications
+ * SkySignalAgent - Main APM agent for Meteor applications.
  *
- * Monitors:
- * - System metrics (CPU, memory, disk, network)
- * - Method performance traces
- * - Publication performance
- * - Database queries
- * - HTTP requests
- * - Errors and exceptions
- * - Background jobs (msavin:sjobs, etc.)
+ * The SkySignal Agent automatically monitors your Meteor application and sends
+ * performance data to the SkySignal dashboard. It collects metrics with minimal
+ * overhead using non-blocking, fire-and-forget batching.
+ *
+ * **Monitored Data:**
+ * - System metrics (CPU, memory, disk, network, event loop lag)
+ * - Meteor Method execution traces with timing breakdowns
+ * - Publication performance and subscription tracking
+ * - MongoDB queries with index usage analysis
+ * - HTTP request/response metrics
+ * - Client and server errors with stack traces
+ * - DDP/WebSocket connections and messages
+ * - Live query observers (oplog vs polling)
+ * - Background jobs (msavin:sjobs support)
+ *
+ * **Quick Start:**
+ * The agent auto-starts if `Meteor.settings.skysignal.apiKey` is configured.
+ * For manual control, use `configure()` and `start()`.
+ *
+ * @class SkySignalAgentClass
+ * @property {Object} config - Current agent configuration
+ * @property {SkySignalClient|null} client - HTTP client for API communication
+ * @property {Object} collectors - Active collector instances
+ * @property {boolean} started - Whether the agent is currently running
+ *
+ * @example
+ * // Auto-start via Meteor settings (recommended)
+ * // In settings.json:
+ * {
+ *   "skysignal": {
+ *     "apiKey": "your-api-key",
+ *     "debug": false
+ *   }
+ * }
+ *
+ * @example
+ * // Manual configuration and start
+ * import { SkySignalAgent } from "meteor/skysignal:agent";
+ *
+ * SkySignalAgent.configure({
+ *   apiKey: "your-api-key",
+ *   appVersion: "1.2.3",
+ *   debug: true
+ * });
+ * SkySignalAgent.start();
+ *
+ * @example
+ * // Track custom business metrics
+ * SkySignalAgent.counter("orders.completed", 1, { region: "US" });
+ * SkySignalAgent.timer("payment.processing", 1250, { provider: "stripe" });
+ * SkySignalAgent.gauge("cart.value", 99.99, { currency: "USD" });
  */
 class SkySignalAgentClass {
 	constructor() {
@@ -82,11 +124,96 @@ class SkySignalAgentClass {
 
 	/**
 	 * Warning logging helper - always logs warnings
+	 * @private
 	 */
 	_warn(...args) {
 		console.warn('[SkySignal]', ...args);
 	}
 
+	/**
+	 * Configure the SkySignal agent with your API key and options.
+	 *
+	 * Call this method before `start()` to customize agent behavior.
+	 * If using Meteor settings, this is called automatically on startup.
+	 *
+	 * @param {Object} [options={}] - Configuration options
+	 * @param {string} options.apiKey - **Required.** Your SkySignal API key from the dashboard
+	 * @param {string} [options.endpoint="https://dash.skysignal.app"] - SkySignal API endpoint
+	 * @param {boolean} [options.enabled=true] - Enable/disable the agent entirely
+	 * @param {boolean} [options.debug=false] - Enable verbose console logging for troubleshooting
+	 * @param {string} [options.host] - Server hostname (auto-detected if not provided)
+	 * @param {string} [options.appVersion] - Application version for tracking deployments (auto-detected from package.json)
+	 * @param {string} [options.buildHash] - Git SHA or build hash for source map lookup (reads BUILD_HASH or GIT_SHA env vars)
+	 *
+	 * @param {number} [options.batchSize=50] - Maximum items per batch before sending
+	 * @param {number} [options.batchSizeBytes=262144] - Maximum batch size in bytes (256KB default)
+	 * @param {number} [options.flushInterval=10000] - Milliseconds between automatic batch flushes
+	 * @param {number} [options.requestTimeout=3000] - HTTP request timeout in milliseconds
+	 * @param {number} [options.maxBatchRetries=3] - Maximum retry attempts for failed batches
+	 *
+	 * @param {boolean} [options.collectSystemMetrics=true] - Collect CPU, memory, disk, network metrics
+	 * @param {number} [options.systemMetricsInterval=60000] - System metrics collection interval (ms)
+	 *
+	 * @param {boolean} [options.collectTraces=true] - Trace Meteor Method execution
+	 * @param {number} [options.traceSampleRate=1.0] - Sampling rate for traces (0.0 to 1.0)
+	 *
+	 * @param {boolean} [options.collectErrors=true] - Capture server-side errors
+	 *
+	 * @param {boolean} [options.collectMongoPool=true] - Monitor MongoDB connection pool
+	 * @param {number} [options.mongoPoolInterval=60000] - Pool metrics collection interval (ms)
+	 *
+	 * @param {boolean} [options.collectCollectionStats=true] - Collect MongoDB collection statistics
+	 * @param {number} [options.collectionStatsInterval=300000] - Collection stats interval (5 min default)
+	 *
+	 * @param {boolean} [options.collectDDPConnections=true] - Monitor WebSocket/DDP connections
+	 * @param {number} [options.ddpConnectionsInterval=30000] - DDP metrics interval (ms)
+	 *
+	 * @param {boolean} [options.collectHttpRequests=true] - Track HTTP request/response metrics
+	 * @param {number} [options.httpRequestsInterval=10000] - HTTP metrics batch interval (ms)
+	 * @param {number} [options.httpSampleRate=1.0] - Sampling rate for HTTP requests (0.0 to 1.0)
+	 * @param {RegExp[]} [options.httpExcludePatterns] - URL patterns to exclude from tracking
+	 *
+	 * @param {boolean} [options.collectLiveQueries=true] - Monitor reactive query observers
+	 * @param {number} [options.liveQueriesInterval=60000] - Live queries metrics interval (ms)
+	 *
+	 * @param {boolean} [options.captureIndexUsage=true] - Run explain() to capture index usage
+	 * @param {number} [options.indexUsageSampleRate=0.05] - Sampling rate for explain() (5% default)
+	 * @param {string} [options.explainVerbosity="executionStats"] - MongoDB explain verbosity level
+	 *
+	 * @param {boolean} [options.collectJobs=true] - Monitor background jobs
+	 * @param {number} [options.jobsInterval=30000] - Job metrics interval (ms)
+	 * @param {string} [options.jobsPackage] - Job package to monitor (auto-detected: "msavin:sjobs")
+	 *
+	 * @returns {void}
+	 *
+	 * @example
+	 * // Minimal configuration
+	 * SkySignalAgent.configure({
+	 *   apiKey: "sk_live_abc123"
+	 * });
+	 *
+	 * @example
+	 * // Full configuration with custom intervals
+	 * SkySignalAgent.configure({
+	 *   apiKey: "sk_live_abc123",
+	 *   appVersion: "2.1.0",
+	 *   debug: true,
+	 *   collectSystemMetrics: true,
+	 *   systemMetricsInterval: 30000,  // Every 30 seconds
+	 *   traceSampleRate: 0.5,          // Sample 50% of traces
+	 *   httpSampleRate: 0.1,           // Sample 10% of HTTP requests
+	 *   indexUsageSampleRate: 0.01     // Explain 1% of queries
+	 * });
+	 *
+	 * @example
+	 * // Disable specific collectors
+	 * SkySignalAgent.configure({
+	 *   apiKey: "sk_live_abc123",
+	 *   collectMongoPool: false,
+	 *   collectCollectionStats: false,
+	 *   collectJobs: false
+	 * });
+	 */
 	configure(options = {}) {
 		this.config = mergeConfig(options);
 
@@ -126,6 +253,55 @@ class SkySignalAgentClass {
 		}
 	}
 
+	/**
+	 * Start the SkySignal agent and begin collecting metrics.
+	 *
+	 * This method initializes all enabled collectors and starts sending data
+	 * to the SkySignal dashboard. You must call `configure()` first to set
+	 * your API key, or configure via `Meteor.settings.skysignal`.
+	 *
+	 * **Prerequisites:**
+	 * - `configure()` must be called first (or use Meteor settings for auto-config)
+	 * - `apiKey` must be set in the configuration
+	 * - `enabled` must be true (default)
+	 *
+	 * **Collector Initialization Order:**
+	 * 1. System Metrics (CPU, memory, disk, network)
+	 * 2. Method Tracer (Meteor Method execution)
+	 * 3. MongoDB Pool Monitor (connection pool metrics)
+	 * 4. Collection Stats (database statistics)
+	 * 5. DDP Connections (WebSocket monitoring)
+	 * 6. HTTP Requests (REST API tracking)
+	 * 7. Live Queries (reactive observer monitoring)
+	 * 8. Jobs (background job monitoring - deferred to after Meteor.startup)
+	 *
+	 * @returns {void}
+	 * @throws {Meteor.Error} Throws "skysignal-no-api-key" if apiKey is not configured
+	 *
+	 * @example
+	 * // Manual start after configure
+	 * import { SkySignalAgent } from "meteor/skysignal:agent";
+	 *
+	 * SkySignalAgent.configure({ apiKey: "sk_live_abc123" });
+	 * SkySignalAgent.start();
+	 *
+	 * @example
+	 * // Check if already started before calling
+	 * if (!SkySignalAgent.started) {
+	 *   SkySignalAgent.configure({ apiKey: process.env.SKYSIGNAL_API_KEY });
+	 *   SkySignalAgent.start();
+	 * }
+	 *
+	 * @example
+	 * // Wrap in try-catch for error handling
+	 * try {
+	 *   SkySignalAgent.configure({ apiKey: "sk_live_abc123" });
+	 *   SkySignalAgent.start();
+	 *   console.log("SkySignal monitoring active");
+	 * } catch (error) {
+	 *   console.error("Failed to start SkySignal:", error.message);
+	 * }
+	 */
 	start() {
 		if (!this.config.apiKey) {
 			throw new Meteor.Error("skysignal-no-api-key", "SkySignal API key is required");
@@ -328,6 +504,46 @@ class SkySignalAgentClass {
 		this._log("Agent started successfully");
 	}
 
+	/**
+	 * Stop the SkySignal agent and flush any pending data.
+	 *
+	 * This method gracefully shuts down all collectors, flushes any pending
+	 * batched data to the API, and cleans up resources. Safe to call multiple
+	 * times (subsequent calls are no-ops if already stopped).
+	 *
+	 * **Cleanup Actions:**
+	 * 1. Stops all active collectors (system metrics, traces, etc.)
+	 * 2. Flushes any pending batched data to the SkySignal API
+	 * 3. Clears collector references
+	 * 4. Sets `started` flag to false
+	 *
+	 * **When to Use:**
+	 * - Before application shutdown for graceful cleanup
+	 * - When temporarily disabling monitoring
+	 * - During testing to reset agent state
+	 *
+	 * @returns {void}
+	 *
+	 * @example
+	 * // Graceful shutdown on SIGTERM
+	 * process.on("SIGTERM", () => {
+	 *   console.log("Shutting down...");
+	 *   SkySignalAgent.stop();
+	 *   process.exit(0);
+	 * });
+	 *
+	 * @example
+	 * // Temporarily disable and re-enable monitoring
+	 * SkySignalAgent.stop();
+	 * // ... do something without monitoring ...
+	 * SkySignalAgent.start();  // Resume monitoring
+	 *
+	 * @example
+	 * // Test cleanup
+	 * afterEach(() => {
+	 *   SkySignalAgent.stop();
+	 * });
+	 */
 	stop() {
 		if (!this.started) {
 			return;
@@ -347,6 +563,257 @@ class SkySignalAgentClass {
 		this._log("Agent stopped");
 	}
 
+	// ============================================================
+	// Custom Metrics API
+	// ============================================================
+
+	/**
+	 * Track a custom metric of any type (counter, timer, or gauge).
+	 *
+	 * Use this method when you need full control over the metric object,
+	 * or use the convenience methods `counter()`, `timer()`, and `gauge()`.
+	 *
+	 * @param {Object} options - The metric configuration
+	 * @param {string} options.name - Metric name using dot notation (e.g., "orders.completed", "payment.processing")
+	 * @param {("counter"|"timer"|"gauge")} options.type - The type of metric:
+	 *   - "counter": Incremental values that only go up (e.g., requests processed, orders placed)
+	 *   - "timer": Duration measurements in milliseconds (e.g., API response time, job duration)
+	 *   - "gauge": Point-in-time values that can go up or down (e.g., queue size, active users)
+	 * @param {number} options.value - The metric value (count for counters, milliseconds for timers, current value for gauges)
+	 * @param {string} [options.unit] - Optional unit of measurement (e.g., "ms", "bytes", "items", "percent")
+	 * @param {Object} [options.tags] - Optional key-value pairs for filtering and grouping in the dashboard
+	 * @param {Date} [options.timestamp] - Optional timestamp (defaults to now)
+	 *
+	 * @returns {boolean} True if the metric was queued successfully, false if agent not started
+	 *
+	 * @example
+	 * // Track a counter metric
+	 * SkySignalAgent.trackMetric({
+	 *   name: "orders.completed",
+	 *   type: "counter",
+	 *   value: 1,
+	 *   tags: { region: "US", paymentMethod: "credit_card" }
+	 * });
+	 *
+	 * @example
+	 * // Track a timer metric
+	 * SkySignalAgent.trackMetric({
+	 *   name: "payment.processing",
+	 *   type: "timer",
+	 *   value: 1250,
+	 *   unit: "ms",
+	 *   tags: { provider: "stripe" }
+	 * });
+	 *
+	 * @example
+	 * // Track a gauge metric
+	 * SkySignalAgent.trackMetric({
+	 *   name: "queue.size",
+	 *   type: "gauge",
+	 *   value: 42,
+	 *   unit: "items"
+	 * });
+	 */
+	trackMetric(options = {}) {
+		if (!this.started || !this.client) {
+			this._warn("Cannot track metric - agent not started");
+			return false;
+		}
+
+		const { name, type, value, unit, tags, timestamp } = options;
+
+		// Validate required fields
+		if (!name || typeof name !== "string") {
+			this._warn("trackMetric requires a 'name' string");
+			return false;
+		}
+
+		if (!type || !["counter", "timer", "gauge"].includes(type)) {
+			this._warn("trackMetric requires 'type' to be one of: counter, timer, gauge");
+			return false;
+		}
+
+		if (typeof value !== "number" || isNaN(value)) {
+			this._warn("trackMetric requires a numeric 'value'");
+			return false;
+		}
+
+		const metric = {
+			timestamp: timestamp instanceof Date ? timestamp : new Date(),
+			name,
+			metricType: type,
+			value,
+			host: this.config.host,
+			appVersion: this.config.appVersion,
+			buildHash: this.config.buildHash
+		};
+
+		if (unit) {
+			metric.unit = unit;
+		}
+
+		if (tags && typeof tags === "object") {
+			metric.tags = tags;
+		}
+
+		this.client.addCustomMetric(metric);
+		this._log(`Custom metric tracked: ${name} (${type}) = ${value}`);
+		return true;
+	}
+
+	/**
+	 * Track a counter metric - use for values that only increment.
+	 *
+	 * Counters are ideal for tracking events that accumulate over time,
+	 * such as the number of orders placed, API requests handled, or emails sent.
+	 *
+	 * @param {string} name - Metric name using dot notation (e.g., "orders.completed", "emails.sent")
+	 * @param {number} [value=1] - The increment value (defaults to 1)
+	 * @param {Object} [options] - Additional options
+	 * @param {string} [options.unit] - Optional unit (e.g., "requests", "orders")
+	 * @param {Object} [options.tags] - Optional tags for filtering (e.g., { region: "US" })
+	 * @param {Date} [options.timestamp] - Optional timestamp (defaults to now)
+	 *
+	 * @returns {boolean} True if the metric was queued successfully
+	 *
+	 * @example
+	 * // Simple counter increment
+	 * SkySignalAgent.counter("orders.completed");
+	 *
+	 * @example
+	 * // Counter with custom value and tags
+	 * SkySignalAgent.counter("items.sold", 5, {
+	 *   tags: { category: "electronics", store: "NYC" }
+	 * });
+	 *
+	 * @example
+	 * // Track API requests by endpoint
+	 * SkySignalAgent.counter("api.requests", 1, {
+	 *   tags: { endpoint: "/users", method: "GET", status: "200" }
+	 * });
+	 */
+	counter(name, value = 1, options = {}) {
+		return this.trackMetric({
+			name,
+			type: "counter",
+			value,
+			unit: options.unit,
+			tags: options.tags,
+			timestamp: options.timestamp
+		});
+	}
+
+	/**
+	 * Track a timer metric - use for measuring durations.
+	 *
+	 * Timers are ideal for tracking how long operations take,
+	 * such as API response times, database query durations, or job execution times.
+	 * The dashboard will calculate min, max, avg, p95, and p99 percentiles.
+	 *
+	 * @param {string} name - Metric name using dot notation (e.g., "payment.processing", "db.query")
+	 * @param {number} duration - Duration in milliseconds
+	 * @param {Object} [options] - Additional options
+	 * @param {string} [options.unit="ms"] - Unit of measurement (defaults to "ms")
+	 * @param {Object} [options.tags] - Optional tags for filtering (e.g., { endpoint: "/checkout" })
+	 * @param {Date} [options.timestamp] - Optional timestamp (defaults to now)
+	 *
+	 * @returns {boolean} True if the metric was queued successfully
+	 *
+	 * @example
+	 * // Track payment processing time
+	 * const start = Date.now();
+	 * await processPayment(order);
+	 * SkySignalAgent.timer("payment.processing", Date.now() - start, {
+	 *   tags: { provider: "stripe", currency: "USD" }
+	 * });
+	 *
+	 * @example
+	 * // Track external API call duration
+	 * const start = Date.now();
+	 * const result = await fetch("https://api.example.com/data");
+	 * SkySignalAgent.timer("external.api.call", Date.now() - start, {
+	 *   tags: { service: "example", endpoint: "/data", status: result.status }
+	 * });
+	 *
+	 * @example
+	 * // Track database query time
+	 * SkySignalAgent.timer("db.query.users", 45, {
+	 *   tags: { collection: "users", operation: "find" }
+	 * });
+	 */
+	timer(name, duration, options = {}) {
+		return this.trackMetric({
+			name,
+			type: "timer",
+			value: duration,
+			unit: options.unit || "ms",
+			tags: options.tags,
+			timestamp: options.timestamp
+		});
+	}
+
+	/**
+	 * Track a gauge metric - use for point-in-time values that can go up or down.
+	 *
+	 * Gauges are ideal for tracking current state values like queue depths,
+	 * active user counts, memory usage, or inventory levels.
+	 * The dashboard will show the latest value along with min/max/avg over time.
+	 *
+	 * @param {string} name - Metric name using dot notation (e.g., "queue.size", "users.active")
+	 * @param {number} value - Current value of the gauge
+	 * @param {Object} [options] - Additional options
+	 * @param {string} [options.unit] - Optional unit (e.g., "users", "bytes", "percent")
+	 * @param {Object} [options.tags] - Optional tags for filtering (e.g., { queue: "emails" })
+	 * @param {Date} [options.timestamp] - Optional timestamp (defaults to now)
+	 *
+	 * @returns {boolean} True if the metric was queued successfully
+	 *
+	 * @example
+	 * // Track queue depth
+	 * const queueSize = await getQueueSize("email-queue");
+	 * SkySignalAgent.gauge("queue.size", queueSize, {
+	 *   unit: "items",
+	 *   tags: { queue: "email" }
+	 * });
+	 *
+	 * @example
+	 * // Track active users
+	 * const activeUsers = Meteor.server.sessions.size;
+	 * SkySignalAgent.gauge("users.active", activeUsers, {
+	 *   unit: "users"
+	 * });
+	 *
+	 * @example
+	 * // Track inventory levels
+	 * SkySignalAgent.gauge("inventory.stock", 150, {
+	 *   unit: "items",
+	 *   tags: { product: "widget-123", warehouse: "NYC" }
+	 * });
+	 *
+	 * @example
+	 * // Track cache hit rate
+	 * SkySignalAgent.gauge("cache.hitRate", 0.85, {
+	 *   unit: "percent",
+	 *   tags: { cache: "redis" }
+	 * });
+	 */
+	gauge(name, value, options = {}) {
+		return this.trackMetric({
+			name,
+			type: "gauge",
+			value,
+			unit: options.unit,
+			tags: options.tags,
+			timestamp: options.timestamp
+		});
+	}
+
+	/**
+	 * Auto-detect the server hostname.
+	 * Uses Node.js os.hostname() to get the machine name.
+	 * @private
+	 * @returns {string} The detected hostname or "unknown-host" on failure
+	 */
 	_detectHost() {
 		try {
 			const os = require("os");
@@ -357,6 +824,13 @@ class SkySignalAgentClass {
 		}
 	}
 
+	/**
+	 * Auto-detect the build hash from environment variables.
+	 * Checks BUILD_HASH and GIT_SHA environment variables in order.
+	 * Used for source map lookup and deployment tracking.
+	 * @private
+	 * @returns {string|null} The build hash or null if not available
+	 */
 	_detectBuildHash() {
 		// Try to detect build hash from environment variables
 		// Priority: BUILD_HASH > GIT_SHA > null
@@ -371,6 +845,19 @@ class SkySignalAgentClass {
 		return null;
 	}
 
+	/**
+	 * Auto-detect the application version from various sources.
+	 *
+	 * Detection priority:
+	 * 1. APP_VERSION environment variable
+	 * 2. Meteor.settings.skysignal.appVersion
+	 * 3. Meteor.settings.public.appVersion
+	 * 4. Meteor Assets (private/package.json)
+	 * 5. Walk up directory tree to find package.json
+	 *
+	 * @private
+	 * @returns {string} The detected version or "unknown" if not found
+	 */
 	_detectAppVersion() {
 		// Priority 1: Environment variable (useful for CI/CD pipelines)
 		if (process.env.APP_VERSION) {

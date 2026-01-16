@@ -1,10 +1,21 @@
 /**
- * SkySignal Error Tracker Client
+ * SkySignal Error Tracker - Client-side error capture with optional screenshots.
  *
- * Captures client-side errors with optional screenshot capture
- * Integrates with SkySignal error tracking system
+ * This class automatically captures JavaScript errors, unhandled promise rejections,
+ * and optionally console.error calls from the browser. Errors are sent to the
+ * SkySignal platform for tracking and analysis.
  *
- * Configuration via settings.json:
+ * **Features:**
+ * - Automatic capture of window.onerror events
+ * - Unhandled promise rejection tracking
+ * - Optional console.error interception
+ * - Screenshot capture on errors (with redaction support)
+ * - Error deduplication via fingerprinting
+ * - Configurable error filtering (ignore patterns)
+ * - beforeSend hook for error modification
+ *
+ * **Configuration via Meteor.settings:**
+ * ```json
  * {
  *   "public": {
  *     "skysignal": {
@@ -13,24 +24,66 @@
  *         "enabled": true,
  *         "attachScreenshots": true,
  *         "screenshotQuality": 0.7,
- *         "screenshotSamplingRate": 10,
+ *         "screenshotSamplingRate": 100,
  *         "maxScreenshotSize": 500000,
- *         "redactSelectors": [...],
+ *         "redactSelectors": [".sensitive", "[data-private]"],
  *         "screenshotOnErrorTypes": ["FatalError", "UnhandledRejection"],
  *         "captureUnhandledRejections": true,
- *         "captureConsoleErrors": true,
- *         "ignoreErrors": [],
- *         "beforeSend": null,
+ *         "captureConsoleErrors": false,
+ *         "ignoreErrors": ["ResizeObserver loop"],
  *         "debug": false
  *       }
  *     }
  *   }
+ * }
+ * ```
+ *
+ * @class ErrorTracker
+ * @example
+ * // Initialize error tracking
+ * import ErrorTracker from 'meteor/skysignal:agent/client/ErrorTracker';
+ *
+ * const tracker = new ErrorTracker({
+ *   publicKey: 'pk_xxx',
+ *   enabled: true,
+ *   captureUnhandledRejections: true
+ * });
+ * tracker.init();
+ *
+ * @example
+ * // Manually capture errors in try/catch blocks
+ * try {
+ *   riskyOperation();
+ * } catch (error) {
+ *   tracker.captureError(error, {
+ *     context: 'checkout',
+ *     userId: currentUser.id
+ *   });
  * }
  */
 
 import ScreenshotCapture from './ScreenshotCapture';
 
 export default class ErrorTracker {
+	/**
+	 * Create a new ErrorTracker instance.
+	 *
+	 * @param {Object} [config={}] - Configuration options
+	 * @param {boolean} [config.enabled=true] - Enable/disable error tracking
+	 * @param {string} config.publicKey - **Required.** SkySignal public API key (pk_xxx)
+	 * @param {string} [config.endpoint="/api/v1/errors"] - API endpoint for error submission
+	 * @param {boolean} [config.attachScreenshots=false] - Capture screenshots on errors
+	 * @param {number} [config.screenshotQuality=0.7] - JPEG quality for screenshots (0.0-1.0)
+	 * @param {number} [config.maxScreenshotSize=512000] - Maximum screenshot size in bytes
+	 * @param {number} [config.screenshotSamplingRate=100] - Percentage of errors to screenshot
+	 * @param {string[]} [config.redactSelectors] - CSS selectors for elements to redact in screenshots
+	 * @param {string[]} [config.screenshotOnErrorTypes] - Only screenshot these error types
+	 * @param {boolean} [config.captureUnhandledRejections=true] - Capture unhandled Promise rejections
+	 * @param {boolean} [config.captureConsoleErrors=false] - Intercept console.error calls
+	 * @param {Array<string|RegExp>} [config.ignoreErrors=[]] - Patterns for errors to ignore
+	 * @param {Function} [config.beforeSend] - Hook to modify errors before sending (return false to skip)
+	 * @param {boolean} [config.debug=false] - Enable debug logging
+	 */
 	constructor(config = {}) {
 		this.config = {
 			enabled: config.enabled !== false,
@@ -65,7 +118,37 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Initialize error tracking
+	 * Initialize error tracking and set up event listeners.
+	 *
+	 * This method must be called before errors will be captured. It sets up:
+	 * 1. Global `window.onerror` handler for uncaught exceptions
+	 * 2. `unhandledrejection` handler for Promise rejections (if enabled)
+	 * 3. `console.error` interception (if enabled)
+	 *
+	 * **Prerequisites:**
+	 * - `publicKey` must be configured
+	 * - `enabled` must be true (default)
+	 *
+	 * Safe to call multiple times (subsequent calls are no-ops).
+	 *
+	 * @returns {void}
+	 *
+	 * @example
+	 * // Standard initialization
+	 * const tracker = new ErrorTracker({
+	 *   publicKey: 'pk_xxx'
+	 * });
+	 * tracker.init();
+	 *
+	 * @example
+	 * // Initialize with Meteor startup
+	 * Meteor.startup(() => {
+	 *   const config = Meteor.settings.public?.skysignal?.errorTracking;
+	 *   if (config?.enabled) {
+	 *     const tracker = new ErrorTracker(config);
+	 *     tracker.init();
+	 *   }
+	 * });
 	 */
 	init() {
 		if (this.initialized) {
@@ -111,7 +194,9 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Setup global error handler
+	 * Set up the global window.onerror handler.
+	 * @private
+	 * @returns {void}
 	 */
 	_setupGlobalErrorHandler() {
 		window.addEventListener('error', async (event) => {
@@ -136,7 +221,9 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Setup unhandled promise rejection handler
+	 * Set up the unhandledrejection event handler for Promise rejections.
+	 * @private
+	 * @returns {void}
 	 */
 	_setupUnhandledRejectionHandler() {
 		window.addEventListener('unhandledrejection', async (event) => {
@@ -159,7 +246,9 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Setup console error capture
+	 * Set up console.error interception to capture logged errors.
+	 * @private
+	 * @returns {void}
 	 */
 	_setupConsoleErrorCapture() {
 		const originalConsoleError = console.error;
@@ -183,7 +272,10 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Check if error should be ignored
+	 * Check if an error message matches any ignore patterns.
+	 * @private
+	 * @param {string} errorMessage - The error message to check
+	 * @returns {boolean} True if error should be ignored
 	 */
 	_shouldIgnoreError(errorMessage) {
 		return this.config.ignoreErrors.some(pattern => {
@@ -195,7 +287,11 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Generate error fingerprint for deduplication
+	 * Generate a unique fingerprint for error deduplication.
+	 * Combines type, message, filename, and line number.
+	 * @private
+	 * @param {Object} error - Error object
+	 * @returns {string} Fingerprint string
 	 */
 	_generateFingerprint(error) {
 		const parts = [
@@ -208,7 +304,11 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Handle error
+	 * Process and send an error to the SkySignal platform.
+	 * Handles deduplication, screenshot capture, and beforeSend hooks.
+	 * @private
+	 * @param {Object} error - Error data to process
+	 * @returns {Promise<void>}
 	 */
 	async _handleError(error) {
 		// Check if error should be ignored
@@ -274,7 +374,11 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Send error to SkySignal platform
+	 * Send an error payload to the SkySignal API.
+	 * Failed requests are queued for retry.
+	 * @private
+	 * @param {Object} error - Complete error payload to send
+	 * @returns {Promise<void>}
 	 */
 	async _sendError(error) {
 		try {
@@ -309,8 +413,41 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Manually capture an error
-	 * Useful for try/catch blocks
+	 * Manually capture and report an error.
+	 *
+	 * Use this method to capture errors from try/catch blocks or other
+	 * situations where automatic capture doesn't apply. The error will
+	 * be processed through the same pipeline as automatic captures,
+	 * including deduplication, screenshot capture, and beforeSend hooks.
+	 *
+	 * @param {Error|string} error - The error to capture (Error object or string message)
+	 * @param {Object} [context={}] - Additional context to attach to the error
+	 * @param {string} [context.userId] - User ID for attribution
+	 * @param {string} [context.component] - Component or module name
+	 * @param {Object} [context.metadata] - Any additional metadata
+	 * @returns {Promise<void>}
+	 *
+	 * @example
+	 * // Capture error from try/catch
+	 * try {
+	 *   await processPayment(order);
+	 * } catch (error) {
+	 *   await tracker.captureError(error, {
+	 *     component: 'PaymentProcessor',
+	 *     orderId: order.id
+	 *   });
+	 *   // Handle error gracefully for user
+	 *   showErrorMessage('Payment failed, please try again');
+	 * }
+	 *
+	 * @example
+	 * // Capture a warning condition as an error
+	 * if (unusualCondition) {
+	 *   await tracker.captureError(new Error('Unusual condition detected'), {
+	 *     severity: 'warning',
+	 *     conditionValue: someValue
+	 *   });
+	 * }
 	 */
 	async captureError(error, context = {}) {
 		if (!this.initialized) {
@@ -330,7 +467,25 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Get error tracker statistics
+	 * Get statistics about the error tracker's state.
+	 *
+	 * Use this to monitor the health of error tracking and detect
+	 * issues like queued errors (network problems) or high pending
+	 * counts (processing bottlenecks).
+	 *
+	 * @returns {Object} Statistics object
+	 * @returns {boolean} returns.initialized - Whether init() has been called
+	 * @returns {number} returns.queuedErrors - Errors waiting to be retried
+	 * @returns {number} returns.pendingErrors - Errors currently being processed
+	 * @returns {Object} [returns.screenshots] - Screenshot capture stats (if enabled)
+	 *
+	 * @example
+	 * const stats = tracker.getStats();
+	 * console.log(`Queued errors: ${stats.queuedErrors}`);
+	 *
+	 * if (stats.queuedErrors > 10) {
+	 *   console.warn('Error queue growing - check network connectivity');
+	 * }
 	 */
 	getStats() {
 		const stats = {
@@ -347,7 +502,14 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Check if error tracking is initialized
+	 * Check if the error tracker has been initialized.
+	 *
+	 * @returns {boolean} True if init() has been successfully called
+	 *
+	 * @example
+	 * if (!tracker.isInitialized()) {
+	 *   tracker.init();
+	 * }
 	 */
 	isInitialized() {
 		return this.initialized;
