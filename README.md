@@ -558,17 +558,26 @@ This will:
 
 ## Performance Impact
 
-The agent is designed to have minimal performance impact:
+The agent is designed to have minimal performance impact on your application:
 
-- **Batching** - Data is batched and sent asynchronously
-- **Non-blocking** - HTTP requests use `Meteor.defer()` to avoid blocking
-- **Configurable Intervals** - Adjust collection frequency based on your needs
-- **Automatic Retries** - Failed requests are re-queued automatically
+### Built-in Optimizations
 
-Typical overhead:
+- **Fire-and-forget batching** - Data is batched and sent asynchronously using `setImmediate()` for lowest latency
+- **HTTP connection pooling** - Reuses TCP connections with `keepAlive` to reduce handshake overhead
+- **Gzip compression** - Large payloads (>1KB) are compressed before sending to reduce bandwidth
+- **Non-blocking collection** - System metrics use async commands to avoid blocking the event loop
+- **Object pooling** - HTTP request tracking reuses pre-allocated objects to reduce GC pressure
+- **Optimized URL matching** - Combined regex patterns for O(1) exclude pattern matching
+- **Staggered startup** - Collectors start with 500ms intervals to avoid CPU spikes at boot
+- **Configurable intervals** - Adjust collection frequency based on your needs
+- **Automatic retries** - Failed requests are re-queued with exponential backoff and jitter
+
+### Typical Overhead
+
 - **CPU**: < 1% additional usage
-- **Memory**: ~10-20MB for batching
-- **Network**: ~1KB per metric, sent in batches
+- **Memory**: ~10-20MB for batching queues
+- **Network**: ~1KB per metric (less with compression), sent in batches
+- **Event loop**: < 1ms impact per collection cycle
 
 ## Troubleshooting
 
