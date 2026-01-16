@@ -111,6 +111,20 @@ class SkySignalAgentClass {
 		this.client = null;
 		this.collectors = {};
 		this.started = false;
+
+		// Stagger offset for collector starts to avoid CPU spikes
+		this._staggerIndex = 0;
+	}
+
+	/**
+	 * Get staggered delay for collector initialization.
+	 * Spreads collector starts over time to avoid simultaneous CPU spikes.
+	 * @private
+	 * @returns {number} Delay in milliseconds
+	 */
+	_getStaggerDelay() {
+		const STAGGER_INTERVAL = 500; // 500ms between each collector start
+		return (this._staggerIndex++) * STAGGER_INTERVAL;
 	}
 
 	/**
@@ -317,6 +331,9 @@ class SkySignalAgentClass {
 			return;
 		}
 
+		// Reset stagger index for clean start
+		this._staggerIndex = 0;
+
 		if (this.config.collectSystemMetrics) {
 			this.collectors.systemMetrics = new SystemMetricsCollector({
 				client: this.client,
@@ -326,8 +343,13 @@ class SkySignalAgentClass {
 				interval: this.config.systemMetricsInterval,
 				debug: this.config.debug
 			});
-			this.collectors.systemMetrics.start();
-			this._log("System metrics collector started");
+			// Stagger collector start to avoid CPU spikes
+			setTimeout(() => {
+				if (this.started && this.collectors.systemMetrics) {
+					this.collectors.systemMetrics.start();
+					this._log("System metrics collector started");
+				}
+			}, this._getStaggerDelay());
 		}
 
 		if (this.config.collectTraces) {
@@ -344,6 +366,7 @@ class SkySignalAgentClass {
 				explainSlowQueriesOnly: this.config.explainSlowQueriesOnly,
 				debug: this.config.debug
 			});
+			// Method tracer starts immediately (wraps Methods synchronously)
 			this.collectors.methodTracer.start();
 			this._log("Method tracer started");
 		}
@@ -365,8 +388,12 @@ class SkySignalAgentClass {
 						fixedConnectionMemory: this.config.mongoPoolFixedConnectionMemory,
 						debug: this.config.debug
 					});
-					this.collectors.mongoPool.start();
-					this._log("MongoDB connection pool monitoring started");
+					setTimeout(() => {
+						if (this.started && this.collectors.mongoPool) {
+							this.collectors.mongoPool.start();
+							this._log("MongoDB connection pool monitoring started");
+						}
+					}, this._getStaggerDelay());
 				} else {
 					this._warn("MongoDB client not available - pool monitoring disabled");
 				}
@@ -391,8 +418,12 @@ class SkySignalAgentClass {
 						collectionInterval: this.config.collectionStatsInterval,
 						debug: this.config.debug
 					});
-					this.collectors.collectionStats.start();
-					this._log("MongoDB collection statistics monitoring started");
+					setTimeout(() => {
+						if (this.started && this.collectors.collectionStats) {
+							this.collectors.collectionStats.start();
+							this._log("MongoDB collection statistics monitoring started");
+						}
+					}, this._getStaggerDelay());
 				} else {
 					this._warn("MongoDB client not available - collection stats monitoring disabled");
 				}
@@ -410,8 +441,12 @@ class SkySignalAgentClass {
 					interval: this.config.ddpConnectionsInterval,
 					debug: this.config.debug
 				});
-				this.collectors.ddpConnections.start();
-				this._log("DDP/WebSocket connection monitoring started");
+				setTimeout(() => {
+					if (this.started && this.collectors.ddpConnections) {
+						this.collectors.ddpConnections.start();
+						this._log("DDP/WebSocket connection monitoring started");
+					}
+				}, this._getStaggerDelay());
 			} catch (error) {
 				this._warn("Failed to start DDP connection monitoring:", error.message);
 			}
@@ -435,6 +470,7 @@ class SkySignalAgentClass {
 				}
 
 				this.collectors.httpRequests = new HTTPCollector(httpCollectorOptions);
+				// HTTP collector starts immediately (middleware needs to be registered early)
 				this.collectors.httpRequests.start();
 				this._log("HTTP request monitoring started");
 			} catch (error) {
@@ -459,8 +495,12 @@ class SkySignalAgentClass {
 				}
 
 				this.collectors.liveQueries = new LiveQueriesCollector(liveQueriesCollectorOptions);
-				this.collectors.liveQueries.start();
-				this._log("Live Queries monitoring started");
+				setTimeout(() => {
+					if (this.started && this.collectors.liveQueries) {
+						this.collectors.liveQueries.start();
+						this._log("Live Queries monitoring started");
+					}
+				}, this._getStaggerDelay());
 			} catch (error) {
 				this._warn("Failed to start Live Queries monitoring:", error.message);
 			}
