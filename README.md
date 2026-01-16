@@ -433,20 +433,87 @@ if (SkySignalRUM.isInitialized()) {
 
 ## Advanced Usage
 
-### Manual Metric Collection
+### Custom Metrics
 
-Send custom metrics to SkySignal:
+Track business-specific KPIs and performance indicators with the custom metrics API:
+
+#### Counter Metrics
+
+Use counters for values that only increment (orders placed, emails sent, API calls):
 
 ```javascript
 import { SkySignalAgent } from 'meteor/skysignal:agent';
 
-// Send a custom metric
-SkySignalAgent.client.addCustomMetric({
-  timestamp: new Date(),
-  metricName: 'checkout_completed',
-  metricValue: 1,
-  unit: 'count',
-  tags: {
+// Simple counter increment
+SkySignalAgent.counter('orders.completed');
+
+// Counter with custom value and tags
+SkySignalAgent.counter('items.sold', 5, {
+  tags: { category: 'electronics', store: 'NYC' }
+});
+
+// Track API requests by endpoint
+SkySignalAgent.counter('api.requests', 1, {
+  tags: { endpoint: '/users', method: 'GET', status: '200' }
+});
+```
+
+#### Timer Metrics
+
+Use timers for measuring durations (API response times, job execution, processing time):
+
+```javascript
+// Track payment processing time
+const start = Date.now();
+await processPayment(order);
+SkySignalAgent.timer('payment.processing', Date.now() - start, {
+  tags: { provider: 'stripe', currency: 'USD' }
+});
+
+// Track external API call duration
+const start = Date.now();
+const result = await fetch('https://api.example.com/data');
+SkySignalAgent.timer('external.api.call', Date.now() - start, {
+  tags: { service: 'example', endpoint: '/data', status: result.status }
+});
+```
+
+#### Gauge Metrics
+
+Use gauges for point-in-time values that go up or down (queue size, active users, inventory):
+
+```javascript
+// Track queue depth
+const queueSize = await getQueueSize('email-queue');
+SkySignalAgent.gauge('queue.size', queueSize, {
+  unit: 'items',
+  tags: { queue: 'email' }
+});
+
+// Track active users
+const activeUsers = Meteor.server.sessions.size;
+SkySignalAgent.gauge('users.active', activeUsers, {
+  unit: 'users'
+});
+
+// Track inventory levels
+SkySignalAgent.gauge('inventory.stock', 150, {
+  unit: 'items',
+  tags: { product: 'widget-123', warehouse: 'NYC' }
+});
+```
+
+#### Generic trackMetric Method
+
+For full control, use the generic `trackMetric()` method:
+
+```javascript
+SkySignalAgent.trackMetric({
+  name: 'checkout.flow',
+  type: 'counter',      // 'counter' | 'timer' | 'gauge'
+  value: 1,
+  unit: 'conversions',  // optional
+  tags: {               // optional - for filtering in dashboard
     product: 'premium',
     region: 'us-east-1'
   }
@@ -532,17 +599,32 @@ Some system metrics (disk, network, process count) require platform-specific API
 
 Main agent singleton instance.
 
-#### Methods
+#### Configuration Methods
 
 - `configure(options)` - Configure the agent with options
 - `start()` - Start all collectors and monitoring
 - `stop()` - Stop all collectors and flush data
+
+#### Custom Metrics Methods
+
+| Method | Description |
+|--------|-------------|
+| `counter(name, value?, options?)` | Track incremental values (default value: 1) |
+| `timer(name, duration, options?)` | Track durations in milliseconds |
+| `gauge(name, value, options?)` | Track point-in-time values |
+| `trackMetric(options)` | Generic method with full control |
+
+**Options object:**
+- `tags` - Object with key-value pairs for filtering
+- `unit` - Unit of measurement (e.g., 'ms', 'items', 'percent')
+- `timestamp` - Optional Date (defaults to now)
 
 #### Properties
 
 - `client` - HTTP client instance for manual data submission
 - `config` - Current configuration object
 - `collectors` - Active collector instances
+- `started` - Boolean indicating if agent is running
 
 ## Support
 
