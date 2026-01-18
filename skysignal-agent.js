@@ -128,6 +128,51 @@ class SkySignalAgentClass {
 	}
 
 	/**
+	 * Get MongoClient from Meteor's MongoInternals
+	 * Handles different MongoDB driver versions and Meteor wrappers
+	 * @returns {Object|null} - MongoClient instance or null
+	 */
+	_getMongoClient() {
+		try {
+			const driver = MongoInternals?.defaultRemoteCollectionDriver?.();
+			if (!driver || !driver.mongo) {
+				return null;
+			}
+
+			const mongo = driver.mongo;
+
+			// The mongo object is Meteor's MongoConnection wrapper
+			// Try different paths to get the underlying MongoClient:
+
+			// Path 1: mongo.db.client (MongoDB driver v4+)
+			if (mongo.db && mongo.db.client) {
+				return mongo.db.client;
+			}
+
+			// Path 2: mongo.client (if exposed directly)
+			if (mongo.client) {
+				return mongo.client;
+			}
+
+			// Path 3: Access via db.s.client (internal structure)
+			if (mongo.db && mongo.db.s && mongo.db.s.client) {
+				return mongo.db.s.client;
+			}
+
+			// Path 4: Check if mongo itself can emit events (older versions)
+			if (typeof mongo.on === 'function') {
+				return mongo;
+			}
+
+			this._log("Could not find MongoClient via standard paths");
+			return null;
+		} catch (error) {
+			this._warn("Error getting MongoClient:", error.message);
+			return null;
+		}
+	}
+
+	/**
 	 * Debug logging helper - only logs when debug mode is enabled
 	 */
 	_log(...args) {
@@ -374,7 +419,8 @@ class SkySignalAgentClass {
 		if (this.config.collectMongoPool) {
 			try {
 				// Get MongoDB client from MongoInternals
-				const mongoClient = MongoInternals.defaultRemoteCollectionDriver()?.mongo?.client;
+				// The MongoClient can be accessed via multiple paths depending on driver version
+				const mongoClient = this._getMongoClient();
 
 				if (mongoClient) {
 					this.collectors.mongoPool = new MongoPoolCollector({
@@ -405,7 +451,7 @@ class SkySignalAgentClass {
 		if (this.config.collectCollectionStats) {
 			try {
 				// Get MongoDB client from MongoInternals
-				const mongoClient = MongoInternals.defaultRemoteCollectionDriver()?.mongo?.client;
+				const mongoClient = this._getMongoClient();
 
 				if (mongoClient) {
 					this.collectors.collectionStats = new MongoCollectionStatsCollector({
@@ -892,8 +938,11 @@ class SkySignalAgentClass {
 	 * 1. APP_VERSION environment variable
 	 * 2. Meteor.settings.skysignal.appVersion
 	 * 3. Meteor.settings.public.appVersion
-	 * 4. Meteor Assets (private/package.json)
-	 * 5. Walk up directory tree to find package.json
+	 * 4. Meteor.settings.public.version (common pattern)
+	 * 5. __meteor_runtime_config__.appVersion
+	 * 6. Meteor Assets (private/package.json or private/version.json)
+	 * 7. Walk up directory tree to find package.json
+	 * 8. Production bundle paths
 	 *
 	 * @private
 	 * @returns {string} The detected version or "unknown" if not found
@@ -901,6 +950,7 @@ class SkySignalAgentClass {
 	_detectAppVersion() {
 		// Priority 1: Environment variable (useful for CI/CD pipelines)
 		if (process.env.APP_VERSION) {
+			this._log("App version from APP_VERSION env:", process.env.APP_VERSION);
 			return process.env.APP_VERSION;
 		}
 
@@ -908,50 +958,137 @@ class SkySignalAgentClass {
 		try {
 			const settings = Meteor.settings?.skysignal || Meteor.settings?.SkySignal || {};
 			if (settings.appVersion) {
+				this._log("App version from settings.skysignal.appVersion:", settings.appVersion);
 				return settings.appVersion;
 			}
-			// Also check top-level settings
+			// Also check public settings (multiple common patterns)
 			if (Meteor.settings?.public?.appVersion) {
+				this._log("App version from settings.public.appVersion:", Meteor.settings.public.appVersion);
 				return Meteor.settings.public.appVersion;
+			}
+			if (Meteor.settings?.public?.version) {
+				this._log("App version from settings.public.version:", Meteor.settings.public.version);
+				return Meteor.settings.public.version;
+			}
+			// Check root level version in settings
+			if (Meteor.settings?.version) {
+				this._log("App version from settings.version:", Meteor.settings.version);
+				return Meteor.settings.version;
 			}
 		} catch (e) {
 			// Settings not available
 		}
 
-		// Priority 3: Try to read from Meteor Assets (package.json in private/)
+		// Priority 3: Check __meteor_runtime_config__ (available in some deployments)
 		try {
-			if (typeof Assets !== "undefined" && Assets.getText) {
-				const packageJsonStr = Assets.getText("package.json");
-				if (packageJsonStr) {
-					const packageJson = JSON.parse(packageJsonStr);
-					if (packageJson.version) {
-						return packageJson.version;
-					}
+			if (typeof __meteor_runtime_config__ !== "undefined") {
+				const rtConfig = __meteor_runtime_config__;
+				if (rtConfig.appVersion) {
+					this._log("App version from __meteor_runtime_config__.appVersion:", rtConfig.appVersion);
+					return rtConfig.appVersion;
+				}
+				if (rtConfig.PUBLIC_SETTINGS?.appVersion) {
+					this._log("App version from runtime PUBLIC_SETTINGS:", rtConfig.PUBLIC_SETTINGS.appVersion);
+					return rtConfig.PUBLIC_SETTINGS.appVersion;
 				}
 			}
 		} catch (e) {
-			// Assets may not be available or file doesn't exist
+			// Runtime config not available
 		}
 
-		// Priority 4: Walk up directory tree to find package.json
-		// In Meteor, process.cwd() is typically .meteor/local/build/programs/server
+		// Priority 4: Try to read from Meteor Assets
+		try {
+			if (typeof Assets !== "undefined" && Assets.getText) {
+				// Try package.json in private/
+				try {
+					const packageJsonStr = Assets.getText("package.json");
+					if (packageJsonStr) {
+						const packageJson = JSON.parse(packageJsonStr);
+						if (packageJson.version) {
+							this._log("App version from Assets package.json:", packageJson.version);
+							return packageJson.version;
+						}
+					}
+				} catch (e) {
+					// File doesn't exist
+				}
+
+				// Try version.json in private/ (simpler alternative)
+				try {
+					const versionJsonStr = Assets.getText("version.json");
+					if (versionJsonStr) {
+						const versionJson = JSON.parse(versionJsonStr);
+						if (versionJson.version) {
+							this._log("App version from Assets version.json:", versionJson.version);
+							return versionJson.version;
+						}
+					}
+				} catch (e) {
+					// File doesn't exist
+				}
+			}
+		} catch (e) {
+			// Assets may not be available
+		}
+
+		// Priority 5: File system detection
 		try {
 			const fs = require("fs");
 			const path = require("path");
 
+			// Collect candidate paths for package.json
+			const candidatePaths = [];
+
+			// Add environment-based paths first (most reliable)
+			if (process.env.PWD) {
+				candidatePaths.push(path.join(process.env.PWD, "package.json"));
+			}
+
+			// Galaxy/production deployment paths
+			if (process.env.METEOR_SHELL_DIR) {
+				candidatePaths.push(path.join(process.env.METEOR_SHELL_DIR, "..", "..", "..", "package.json"));
+			}
+
+			// Try relative to __dirname (where the bundle code lives)
+			if (typeof __dirname !== "undefined") {
+				// In production bundle: programs/server/packages/skysignal_agent.js
+				// package.json would be at: ../../package.json (relative to programs/server)
+				candidatePaths.push(path.resolve(__dirname, "..", "..", "package.json"));
+				candidatePaths.push(path.resolve(__dirname, "..", "..", "..", "package.json"));
+				candidatePaths.push(path.resolve(__dirname, "..", "..", "..", "..", "package.json"));
+			}
+
+			// Try paths first before walking directories
+			for (const loc of candidatePaths) {
+				const version = this._tryReadPackageVersion(fs, loc);
+				if (version) {
+					this._log("App version from candidate path:", loc, "->", version);
+					return version;
+				}
+			}
+
+			// Walk up directory tree from cwd
+			// In development: .meteor/local/build/programs/server
+			// In production: varies by deployment platform
 			let currentDir = process.cwd();
 			const root = path.parse(currentDir).root;
+			let foundPackageJsons = [];
 
-			// Walk up the directory tree looking for package.json
 			while (currentDir !== root) {
 				const packageJsonPath = path.join(currentDir, "package.json");
 				try {
 					if (fs.existsSync(packageJsonPath)) {
-						const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-						// Make sure this is the app's package.json, not a dependency
-						// Check if it has typical Meteor app indicators
-						if (packageJson.version && (packageJson.meteor || packageJson.scripts?.start?.includes("meteor"))) {
-							return packageJson.version;
+						const content = fs.readFileSync(packageJsonPath, "utf8");
+						const packageJson = JSON.parse(content);
+
+						// Score this package.json to determine if it's likely the app's
+						const score = this._scorePackageJson(packageJson, currentDir);
+						if (score > 0 && packageJson.version) {
+							foundPackageJsons.push({
+								path: packageJsonPath,
+								version: packageJson.version,
+								score: score
+							});
 						}
 					}
 				} catch (readError) {
@@ -960,30 +1097,99 @@ class SkySignalAgentClass {
 				currentDir = path.dirname(currentDir);
 			}
 
-			// Also try specific Meteor paths
-			const meteorPaths = [
-				process.env.PWD ? path.join(process.env.PWD, "package.json") : null,
-				process.env.METEOR_SHELL_DIR ? path.join(process.env.METEOR_SHELL_DIR, "..", "..", "..", "package.json") : null
-			].filter(Boolean);
-
-			for (const loc of meteorPaths) {
-				try {
-					if (fs.existsSync(loc)) {
-						const packageJson = JSON.parse(fs.readFileSync(loc, "utf8"));
-						if (packageJson.version) {
-							return packageJson.version;
-						}
-					}
-				} catch (readError) {
-					// Skip this location
-				}
+			// Return the highest-scored package.json version
+			if (foundPackageJsons.length > 0) {
+				foundPackageJsons.sort((a, b) => b.score - a.score);
+				const best = foundPackageJsons[0];
+				this._log("App version from scored package.json:", best.path, "->", best.version, "(score:", best.score + ")");
+				return best.version;
 			}
 		} catch (e) {
 			// File system access may not be available
+			this._log("Error during file system version detection:", e.message);
 		}
 
 		// Fallback: version unknown
+		this._log("Could not detect app version - returning 'unknown'");
 		return "unknown";
+	}
+
+	/**
+	 * Try to read version from a package.json file
+	 * @private
+	 */
+	_tryReadPackageVersion(fs, filePath) {
+		try {
+			if (fs.existsSync(filePath)) {
+				const content = fs.readFileSync(filePath, "utf8");
+				const packageJson = JSON.parse(content);
+				// Only return if it has a version and looks like an app package.json
+				if (packageJson.version && this._scorePackageJson(packageJson, filePath) > 0) {
+					return packageJson.version;
+				}
+			}
+		} catch (e) {
+			// Ignore errors
+		}
+		return null;
+	}
+
+	/**
+	 * Score a package.json to determine likelihood it's the app's main package.json
+	 * Higher score = more likely to be the app's package.json
+	 * @private
+	 */
+	_scorePackageJson(packageJson, filePath) {
+		let score = 0;
+
+		// Must have a version
+		if (!packageJson.version) {
+			return 0;
+		}
+
+		// Strong indicators this is a Meteor app
+		if (packageJson.meteor) {
+			score += 10; // Has meteor config section
+		}
+
+		// Check for Meteor-related dependencies
+		const allDeps = {
+			...(packageJson.dependencies || {}),
+			...(packageJson.devDependencies || {})
+		};
+
+		if (allDeps["@babel/runtime"]) score += 2;
+		if (allDeps["meteor-node-stubs"]) score += 5;
+		if (allDeps["simpl-schema"]) score += 2;
+		if (allDeps["react"]) score += 1;
+
+		// Check scripts for meteor commands
+		const scripts = packageJson.scripts || {};
+		const allScripts = Object.values(scripts).join(" ");
+		if (allScripts.includes("meteor")) {
+			score += 5;
+		}
+
+		// Penalize if it looks like a dependency package
+		if (packageJson.main && packageJson.main.includes("dist/")) {
+			score -= 3;
+		}
+		if (filePath && filePath.includes("node_modules")) {
+			return 0; // Never use node_modules packages
+		}
+
+		// Having a name that doesn't start with @ is slightly positive
+		if (packageJson.name && !packageJson.name.startsWith("@")) {
+			score += 1;
+		}
+
+		// If score is still 0 but has a version, give it a base score
+		// This allows detection even for minimal package.json files
+		if (score === 0 && packageJson.version) {
+			score = 1;
+		}
+
+		return score;
 	}
 }
 
