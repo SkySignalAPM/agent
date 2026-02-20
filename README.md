@@ -641,6 +641,9 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.11 (New Feature)
+- Added client IP address collection for enhanced user context in error tracking and performance correlation
+
 ### v1.0.7 (Bug Fixes)
 - Increased default timeout from 3000ms to 15000ms for API requests to handle slow networks
 
