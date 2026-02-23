@@ -8,6 +8,7 @@ import MongoCollectionStatsCollector from "./lib/collectors/MongoCollectionStats
 import DDPCollector from "./lib/collectors/DDPCollector.js";
 import HTTPCollector from "./lib/collectors/HTTPCollector.js";
 import LiveQueriesCollector from "./lib/collectors/LiveQueriesCollector.js";
+import LogsCollector from "./lib/collectors/LogsCollector.js";
 import JobCollector from "./lib/collectors/jobs/index.js";
 import SkySignalClient from "./lib/SkySignalClient.js";
 import { mergeConfig } from "./lib/config.js";
@@ -105,7 +106,14 @@ class SkySignalAgentClass {
 			// Job monitoring
 			collectJobs: true, // Enable background job monitoring
 			jobsInterval: 30000, // 30s default (send job stats every 30s)
-			jobsPackage: null // Auto-detect by default, or specify: "msavin:sjobs"
+			jobsPackage: null, // Auto-detect by default, or specify: "msavin:sjobs"
+			// Log collection
+			collectLogs: true, // Enable log capturing
+			logLevels: ["info", "warn", "error", "fatal"],
+			logSampleRate: 1.0,
+			logMaxMessageLength: 10000,
+			logCaptureConsole: true,
+			logCaptureMeteorLog: true
 		};
 
 		this.client = null;
@@ -552,6 +560,23 @@ class SkySignalAgentClass {
 			}
 		}
 
+		if (this.config.collectLogs) {
+			this.collectors.logs = new LogsCollector({
+				client: this.client,
+				host: this.config.host,
+				appVersion: this.config.appVersion,
+				buildHash: this.config.buildHash,
+				levels: this.config.logLevels,
+				sampleRate: this.config.logSampleRate,
+				maxMessageLength: this.config.logMaxMessageLength,
+				captureConsole: this.config.logCaptureConsole,
+				captureMeteorLog: this.config.logCaptureMeteorLog,
+				debug: this.config.debug
+			});
+			this.collectors.logs.start();
+			this._log("Logs collector started");
+		}
+
 		if (this.config.collectJobs) {
 			// Defer job monitoring to after all Meteor.startup callbacks have run
 			// Job packages like msavin:sjobs register their own Meteor.startup callbacks
@@ -891,6 +916,37 @@ class SkySignalAgentClass {
 			unit: options.unit,
 			tags: options.tags,
 			timestamp: options.timestamp
+		});
+	}
+
+	// ============================================================
+	// Log API
+	// ============================================================
+
+	/**
+	 * Manually add a log entry via the public API.
+	 *
+	 * Use this when you want to send structured logs programmatically,
+	 * bypassing console.* / Meteor Log.* interception.
+	 *
+	 * @param {string} level - Log level: "debug", "info", "warn", "error", "fatal"
+	 * @param {string} message - Log message text
+	 * @param {Object} [metadata={}] - Additional structured data
+	 * @returns {void}
+	 *
+	 * @example
+	 * SkySignalAgent.addLog("info", "User signed up", { userId: "abc123" });
+	 * SkySignalAgent.addLog("error", "Payment failed", { orderId: "xyz", provider: "stripe" });
+	 */
+	addLog(level, message, metadata = {}) {
+		if (!this.started || !this.config.collectLogs) return;
+		this.client.addLog({
+			level,
+			message,
+			source: "api",
+			metadata,
+			host: this.config.host,
+			timestamp: new Date()
 		});
 	}
 

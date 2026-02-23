@@ -641,6 +641,12 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.12 (New Features & Bug Fixes)
+- **Change Streams support** - Live query observer detection now identifies Change Stream drivers (Meteor 3.5+) alongside oplog and polling, with per-observer introspection instead of global heuristic
+- **Log collection** - New `LogsCollector` captures `console.*` and Meteor `Log.*` output with structured metadata, configurable levels, and sampling support. Includes public `SkySignalAgent.addLog()` API for programmatic log submission
+- **Silent failure for optional packages** - HTTP and Email package instrumentation no longer logs warnings when packages aren't installed; errors are suppressed to debug-only output (fixes [#1](https://github.com/SkySignalAPM/agent/issues/1))
+- **Client-side error tracking fix** - Fixed 400 "Invalid JSON" response when the agent sends batched client errors to `/api/v1/errors`. The server endpoint now correctly reads the pre-parsed request body and supports both batched `{ errors: [...] }` and single error formats (fixes [#2](https://github.com/SkySignalAPM/agent/issues/2))
+
 ### v1.0.11 (New Feature)
 - Added client IP address collection for enhanced user context in error tracking and performance correlation
 
