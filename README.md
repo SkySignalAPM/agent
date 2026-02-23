@@ -732,6 +732,9 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.13 (Bug Fix)
+- **Trace context isolation** - Replaced shared `_currentMethodContext` variable with Node.js `AsyncLocalStorage` to properly isolate method trace contexts across concurrent async operations. Fixes a bug where background job database queries (e.g., `jobs_data.findOneAsync()`) would leak into unrelated Meteor method traces when both executed concurrently on the same event loop.
+
 ### v1.0.12 (New Features & Bug Fixes)
 - **Change Streams support** - Live query observer detection now identifies Change Stream drivers (Meteor 3.5+) alongside oplog and polling, with per-observer introspection instead of global heuristic
 - **Log collection** - New `LogsCollector` captures `console.*` and Meteor `Log.*` output with structured metadata, configurable levels, and sampling support. Includes public `SkySignalAgent.addLog()` API for programmatic log submission
