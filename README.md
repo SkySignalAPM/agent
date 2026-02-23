@@ -732,6 +732,9 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.14 (Bug Fix)
+- **Silent production logging** - Replaced bare `console.log()` calls with debug-guarded `_log()` helpers across all collectors (`HTTPCollector`, `DDPCollector`, `DDPQueueCollector`, `LiveQueriesCollector`, `MongoCollectionStatsCollector`, `BaseJobMonitor`, `SteveJobsMonitor`, `JobCollector`). Previously, operational messages like "Batched 1 HTTP requests", "Sent 18 subscription records", and job lifecycle events were unconditionally printed to stdout regardless of the `debug` setting. All informational logs are now silent by default and only appear when `debug: true` is set in the agent configuration.
+
 ### v1.0.13 (Bug Fix)
 - **Trace context isolation** - Replaced shared `_currentMethodContext` variable with Node.js `AsyncLocalStorage` to properly isolate method trace contexts across concurrent async operations. Fixes a bug where background job database queries (e.g., `jobs_data.findOneAsync()`) would leak into unrelated Meteor method traces when both executed concurrently on the same event loop.
 
