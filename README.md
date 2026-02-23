@@ -7,9 +7,11 @@ Official APM agent for monitoring Meteor.js applications with [SkySignal](https:
 - **System Metrics Monitoring** - CPU, memory, disk, and network usage
 - **Method Performance Traces** - Track Meteor Method execution with operation-level profiling
 - **Publication Monitoring** - Monitor publication performance and subscriptions
-- **Error Tracking** - Automatic error capture with client context
+- **Error Tracking** - Automatic server-side and client-side error capture with browser context
+- **Log Collection** - Capture `console.*` and Meteor `Log.*` output with structured metadata and sampling
 - **HTTP Request Monitoring** - Track outgoing HTTP requests
 - **Database Query Monitoring** - MongoDB query performance tracking
+- **Live Query Monitoring** - Per-observer driver detection for Change Streams (Meteor 3.5+), oplog, and polling
 - **Real User Monitoring (RUM)** - Browser-side Core Web Vitals (LCP, FID, CLS, TTFB, FCP, TTI) with automatic performance warnings
 - **SPA Route Tracking** - Automatic performance collection on every route change
 - **Session Tracking** - 30-minute user sessions with localStorage persistence
@@ -83,6 +85,9 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
     "collectMongoPool": true,
     "collectDDPConnections": true,
     "collectJobs": true,
+    "collectLogs": true,
+    "logLevels": ["warn", "error", "fatal"],
+    "logSampleRate": 0.5,
     "captureIndexUsage": true,
     "indexUsageSampleRate": 0.05
   },
@@ -92,6 +97,10 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
       "rum": {
         "enabled": true,
         "sampleRate": 0.5
+      },
+      "errorTracking": {
+        "enabled": true,
+        "captureUnhandledRejections": true
       }
     }
   }
@@ -171,8 +180,9 @@ Meteor.startup(() => {
 | `collectMongoPool` | Boolean | `true` | Collect MongoDB connection pool metrics |
 | `collectCollectionStats` | Boolean | `true` | Collect MongoDB collection statistics |
 | `collectDDPConnections` | Boolean | `true` | Collect DDP/WebSocket connection metrics |
-| `collectLiveQueries` | Boolean | `true` | Collect Meteor live query (oplog/polling) metrics |
+| `collectLiveQueries` | Boolean | `true` | Collect Meteor live query metrics (change streams, oplog, polling) |
 | `collectJobs` | Boolean | `true` | Collect background job metrics |
+| `collectLogs` | Boolean | `true` | Collect server-side logs from console and Meteor Log |
 | `collectRUM` | Boolean | `false` | Client-side RUM (disabled by default, requires publicKey) |
 
 ### MongoDB Pool Configuration
@@ -220,6 +230,27 @@ Meteor.startup(() => {
 | `collectJobs` | Boolean | `true` | Enable background job monitoring |
 | `jobsInterval` | Number | `30000` | Job stats collection interval (30 seconds) |
 | `jobsPackage` | String | `null` | Auto-detect, or specify: `"msavin:sjobs"` |
+
+### Log Collection
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `collectLogs` | Boolean | `true` | Enable log capturing |
+| `logLevels` | Array | `["info", "warn", "error", "fatal"]` | Log levels to capture (excludes `debug` by default) |
+| `logSampleRate` | Number | `1.0` | Sample rate (0-1). Reduce for high-volume apps |
+| `logMaxMessageLength` | Number | `10000` | Max characters per log message before truncation |
+| `logCaptureConsole` | Boolean | `true` | Intercept `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug` |
+| `logCaptureMeteorLog` | Boolean | `true` | Intercept Meteor `Log.info`, `Log.warn`, `Log.error`, `Log.debug` |
+
+### Client-Side Error Tracking
+
+Client-side error tracking is configured in `Meteor.settings.public.skysignal.errorTracking` and auto-initializes alongside RUM.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `errorTracking.enabled` | Boolean | `true` | Enable client-side error capture |
+| `errorTracking.captureUnhandledRejections` | Boolean | `true` | Capture unhandled Promise rejections |
+| `errorTracking.debug` | Boolean | `false` | Log error tracker activity to the browser console |
 
 ## What Gets Monitored
 
@@ -277,9 +308,12 @@ Connection pool health and performance:
 
 ### Live Query Monitoring
 
-Meteor reactive query tracking:
+Meteor reactive query tracking with per-observer driver detection:
+- **Change Stream** detection (Meteor 3.5+), **oplog**, and **polling** observer types
+- Per-observer introspection via `handle._multiplexer._observeDriver.constructor.name`
+- Fallback to `MONGO_OPLOG_URL` heuristic for pre-3.5 Meteor apps
+- Reactive efficiency metric: `(changeStream + oplog) / total observers`
 - Observer count by collection
-- Oplog vs polling efficiency
 - Document update rates
 - Performance ratings (optimal/good/slow)
 - Query signature deduplication
@@ -294,12 +328,26 @@ Track `msavin:sjobs` (Steve Jobs) and other job packages:
 
 ### Error Tracking
 
-Automatic error capture:
+Automatic error capture on both server and client:
 - Server-side errors with stack traces
-- Client-side errors with browser context
+- Client-side errors via `window.onerror` and `unhandledrejection` handlers
+- Browser context (URL, user agent, viewport, user ID)
 - Error grouping and fingerprinting
 - Affected users and methods
 - Build hash correlation for source maps
+- Batched delivery to `/api/v1/errors` with public key authentication
+
+### Log Collection
+
+Server-side log capture with structured metadata:
+- Intercepts `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug`
+- Intercepts Meteor `Log.info`, `Log.warn`, `Log.error`, `Log.debug`
+- Configurable log levels (default: info, warn, error, fatal)
+- Sampling support for high-volume apps
+- Message truncation to prevent oversized payloads
+- Automatic host and timestamp enrichment
+- Correlation with Meteor Method traces via `methodName` and `traceId`
+- Programmatic log submission via `SkySignalAgent.addLog()`
 
 ### Real User Monitoring (RUM) - Client-Side
 
@@ -351,6 +399,11 @@ RUM monitoring **auto-initializes** from your Meteor settings.
         "enabled": true,
         "sampleRate": 1.0,
         "debug": false
+      },
+      "errorTracking": {
+        "enabled": true,
+        "captureUnhandledRejections": true,
+        "debug": false
       }
     }
   }
@@ -366,6 +419,9 @@ RUM monitoring **auto-initializes** from your Meteor settings.
 | `rum.enabled` | Boolean | `true` | Enable/disable RUM collection |
 | `rum.sampleRate` | Number | Auto | Sample rate (0-1). Auto: 100% for localhost, 50% for production |
 | `rum.debug` | Boolean | `false` | Enable console logging for debugging |
+| `errorTracking.enabled` | Boolean | `true` | Enable client-side error capture via `window.onerror` and `unhandledrejection` |
+| `errorTracking.captureUnhandledRejections` | Boolean | `true` | Capture unhandled Promise rejections |
+| `errorTracking.debug` | Boolean | `false` | Log error tracker activity to the browser console |
 
 **Key Security Note:**
 - **API Key (sk_ prefix)**: Server-side only, keep in private `settings.skysignal`. Used for server-to-server communication.
@@ -543,6 +599,35 @@ SkySignalAgent.client.addTrace({
 });
 ```
 
+### Manual Log Submission
+
+Send structured logs programmatically, bypassing `console.*` / Meteor `Log.*` interception:
+
+```javascript
+import { SkySignalAgent } from 'meteor/skysignal:agent';
+
+// Simple log
+SkySignalAgent.addLog('info', 'User signed up', { userId: 'abc123' });
+
+// Error log with context
+SkySignalAgent.addLog('error', 'Payment failed', {
+  orderId: 'xyz-789',
+  provider: 'stripe',
+  errorCode: 'card_declined'
+});
+
+// Warning with structured metadata
+SkySignalAgent.addLog('warn', 'Rate limit approaching', {
+  endpoint: '/api/search',
+  currentRate: 450,
+  limit: 500
+});
+```
+
+**Log levels:** `debug`, `info`, `warn`, `error`, `fatal`
+
+Logs submitted via `addLog()` are tagged with `source: "api"` to distinguish them from auto-captured console/Meteor logs.
+
 ### Stopping the Agent
 
 To gracefully stop the agent (e.g., during shutdown):
@@ -622,6 +707,12 @@ Main agent singleton instance.
 | `timer(name, duration, options?)` | Track durations in milliseconds |
 | `gauge(name, value, options?)` | Track point-in-time values |
 | `trackMetric(options)` | Generic method with full control |
+
+#### Log Methods
+
+| Method | Description |
+|--------|-------------|
+| `addLog(level, message, metadata?)` | Submit a structured log entry. Level: `debug`, `info`, `warn`, `error`, `fatal` |
 
 **Options object:**
 - `tags` - Object with key-value pairs for filtering
