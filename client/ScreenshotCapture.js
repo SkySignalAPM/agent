@@ -11,6 +11,8 @@
  * - Element-level privacy controls
  */
 
+import html2canvas from 'html2canvas';
+
 export default class ScreenshotCapture {
 	constructor(config = {}) {
 		this.config = {
@@ -310,12 +312,6 @@ export default class ScreenshotCapture {
 	 */
 	async _captureScreenshot() {
 		try {
-			// Check if html2canvas is available
-			if (typeof html2canvas === 'undefined') {
-				console.warn('[SkySignal ScreenshotCapture] html2canvas library not loaded');
-				return null;
-			}
-
 			// Capture screenshot
 			const canvas = await html2canvas(document.body, {
 				useCORS: true,

@@ -854,6 +854,12 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.16 (Bug Fixes)
+
+- **DDP queue infinite recursion fix** - Removed `finally` block in `DDPQueueCollector._hijackMethodHandler` that unconditionally called `unblock()` after every method invocation. When sessions were wrapped more than once (e.g., agent stop/restart during hot reload), the stacked `finally` blocks triggered cross-layer recursion through the original `unblock` reference, causing `RangeError: Maximum call stack size exceeded`. Added a `_skySignalDDPQueueWrapped` sentinel to prevent double-wrapping sessions entirely. (fixes [#5](https://github.com/SkySignalAPM/agent/issues/5))
+- **Stale keepAlive socket fix** - Added `freeSocketTimeout: 15000` to both HTTP and HTTPS agents used by `SkySignalClient`. Previously, idle keepAlive sockets could sit in the pool indefinitely; when the server closed its end, the next request reusing the stale socket would get an `AbortError`. The `subscriptions` batch type was disproportionately affected due to its longer flush cadence. Abort errors are now downgraded to debug-only `console.warn` since the retry logic already handles them transparently. (fixes [#4](https://github.com/SkySignalAPM/agent/issues/4))
+- **Screenshot capture import fix** - `ScreenshotCapture` now imports `html2canvas` as an ES module instead of checking for a global variable. Since `html2canvas` is already declared in `Npm.depends()` in `package.js`, Meteor bundles it automatically — host applications no longer need to install it as a separate dependency. (fixes [#3](https://github.com/SkySignalAPM/agent/issues/3))
+
 ### v1.0.15 (New Features)
 
 **7 new collectors**, enhanced system metrics, COLLSCAN detection, sendBeacon transport, and worker thread offloading.
