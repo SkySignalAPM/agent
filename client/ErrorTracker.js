@@ -374,21 +374,63 @@ export default class ErrorTracker {
 	}
 
 	/**
+	 * Get the beacon URL with public key as query param (lazily cached).
+	 * sendBeacon cannot set custom headers, so we pass the key via ?pk=.
+	 * @private
+	 * @returns {string}
+	 */
+	_getBeaconUrl() {
+		if (!this._beaconUrl) {
+			const base = this.config.endpoint.startsWith('http')
+				? this.config.endpoint
+				: `${window.location.origin}${this.config.endpoint}`;
+			this._beaconUrl = `${base}?pk=${encodeURIComponent(this.config.publicKey)}`;
+		}
+		return this._beaconUrl;
+	}
+
+	/**
 	 * Send an error payload to the SkySignal API.
+	 * Uses sendBeacon for small errors without screenshots (zero async overhead),
+	 * falls back to fetch with keepalive for large payloads or screenshots.
 	 * Failed requests are queued for retry.
 	 * @private
 	 * @param {Object} error - Complete error payload to send
 	 * @returns {Promise<void>}
 	 */
 	async _sendError(error) {
+		const json = JSON.stringify(error);
+		const hasScreenshot = !!error.screenshot;
+		const size = json.length;
+
+		// Use sendBeacon for small payloads without screenshots (zero async overhead)
+		if (!hasScreenshot && size < 60000 && navigator.sendBeacon) {
+			const url = this._getBeaconUrl();
+			const blob = new Blob([json], { type: 'application/json' });
+			const queued = navigator.sendBeacon(url, blob);
+			if (queued) {
+				if (this.config.debug) {
+					console.log('[SkySignal ErrorTracker] Error sent via beacon', {
+						type: error.type,
+						message: error.message
+					});
+				}
+				return;
+			}
+			// sendBeacon returned false — fall through to fetch
+		}
+
+		// Fall back to fetch with keepalive for large payloads / screenshots
 		try {
-			const response = await fetch(this.config.endpoint, {
+			const url = this._getBeaconUrl();
+			const response = await fetch(url, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
 					'X-SkySignal-Public-Key': this.config.publicKey
 				},
-				body: JSON.stringify(error)
+				body: json,
+				keepalive: !hasScreenshot // keepalive has size limits too; skip for large payloads
 			});
 
 			if (!response.ok) {
@@ -399,7 +441,7 @@ export default class ErrorTracker {
 				console.log('[SkySignal ErrorTracker] Error sent successfully', {
 					type: error.type,
 					message: error.message,
-					hasScreenshot: !!error.screenshot
+					hasScreenshot
 				});
 			}
 		} catch (err) {

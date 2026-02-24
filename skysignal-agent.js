@@ -9,6 +9,13 @@ import DDPCollector from "./lib/collectors/DDPCollector.js";
 import HTTPCollector from "./lib/collectors/HTTPCollector.js";
 import LiveQueriesCollector from "./lib/collectors/LiveQueriesCollector.js";
 import LogsCollector from "./lib/collectors/LogsCollector.js";
+import DnsTimingCollector from "./lib/collectors/DnsTimingCollector.js";
+import DiagnosticsChannelCollector from "./lib/collectors/DiagnosticsChannelCollector.js";
+import CpuProfiler from "./lib/collectors/CpuProfiler.js";
+import DeprecatedApiCollector from "./lib/collectors/DeprecatedApiCollector.js";
+import PublicationTracer from "./lib/collectors/PublicationTracer.js";
+import EnvironmentCollector from "./lib/collectors/EnvironmentCollector.js";
+import VulnerabilityCollector from "./lib/collectors/VulnerabilityCollector.js";
 import JobCollector from "./lib/collectors/jobs/index.js";
 import SkySignalClient from "./lib/SkySignalClient.js";
 import { mergeConfig } from "./lib/config.js";
@@ -113,7 +120,31 @@ class SkySignalAgentClass {
 			logSampleRate: 1.0,
 			logMaxMessageLength: 10000,
 			logCaptureConsole: true,
-			logCaptureMeteorLog: true
+			logCaptureMeteorLog: true,
+			// DNS timing
+			collectDnsTimings: true,
+			dnsTimingsInterval: 60000, // 60s default
+			// Outbound HTTP (diagnostics_channel)
+			collectOutboundHttp: true,
+			outboundHttpInterval: 60000, // 60s default
+			// CPU profiling (on-demand)
+			collectCpuProfiles: true,
+			cpuProfileThreshold: 80, // CPU % to trigger profiling
+			cpuProfileDuration: 10000, // 10s profile
+			cpuProfileCooldown: 300000, // 5 min between profiles
+			cpuProfileCheckInterval: 30000, // Check CPU every 30s
+			// Deprecated API usage detection
+			collectDeprecatedApis: true,
+			deprecatedApisInterval: 300000, // 5 min
+			// Publication over-fetching detection
+			collectPublications: true,
+			publicationsInterval: 300000, // 5 min
+			// Environment metadata
+			collectEnvironment: true,
+			environmentInterval: 1800000, // 30 min
+			// Vulnerability scanning
+			collectVulnerabilities: true,
+			vulnerabilitiesInterval: 3600000 // 1 hour
 		};
 
 		this.client = null;
@@ -575,6 +606,152 @@ class SkySignalAgentClass {
 			});
 			this.collectors.logs.start();
 			this._log("Logs collector started");
+		}
+
+		if (this.config.collectDnsTimings) {
+			try {
+				this.collectors.dnsTimings = new DnsTimingCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					buildHash: this.config.buildHash,
+					interval: this.config.dnsTimingsInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.dnsTimings) {
+						this.collectors.dnsTimings.start();
+						this._log("DNS timing collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start DNS timing collector:", error.message);
+			}
+		}
+
+		if (this.config.collectOutboundHttp) {
+			try {
+				this.collectors.outboundHttp = new DiagnosticsChannelCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					buildHash: this.config.buildHash,
+					interval: this.config.outboundHttpInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.outboundHttp) {
+						this.collectors.outboundHttp.start();
+						this._log("Outbound HTTP (diagnostics_channel) collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start outbound HTTP collector:", error.message);
+			}
+		}
+
+		if (this.config.collectCpuProfiles) {
+			try {
+				this.collectors.cpuProfiler = new CpuProfiler({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					buildHash: this.config.buildHash,
+					interval: this.config.cpuProfileCheckInterval,
+					cpuThreshold: this.config.cpuProfileThreshold,
+					profileDuration: this.config.cpuProfileDuration,
+					cooldownPeriod: this.config.cpuProfileCooldown,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.cpuProfiler) {
+						this.collectors.cpuProfiler.start();
+						this._log("CPU profiler started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start CPU profiler:", error.message);
+			}
+		}
+
+		if (this.config.collectDeprecatedApis) {
+			try {
+				this.collectors.deprecatedApis = new DeprecatedApiCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					interval: this.config.deprecatedApisInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.deprecatedApis) {
+						this.collectors.deprecatedApis.start();
+						this._log("Deprecated API collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start deprecated API collector:", error.message);
+			}
+		}
+
+		if (this.config.collectPublications) {
+			try {
+				this.collectors.publications = new PublicationTracer({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					interval: this.config.publicationsInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.publications) {
+						this.collectors.publications.start();
+						this._log("Publication tracer started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start publication tracer:", error.message);
+			}
+		}
+
+		if (this.config.collectEnvironment) {
+			try {
+				this.collectors.environment = new EnvironmentCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					interval: this.config.environmentInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.environment) {
+						this.collectors.environment.start();
+						this._log("Environment collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start environment collector:", error.message);
+			}
+		}
+
+		if (this.config.collectVulnerabilities) {
+			try {
+				this.collectors.vulnerabilities = new VulnerabilityCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					interval: this.config.vulnerabilitiesInterval,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.vulnerabilities) {
+						this.collectors.vulnerabilities.start();
+						this._log("Vulnerability collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start vulnerability collector:", error.message);
+			}
 		}
 
 		if (this.config.collectJobs) {

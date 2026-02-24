@@ -4,19 +4,27 @@ Official APM agent for monitoring Meteor.js applications with [SkySignal](https:
 
 ## Features
 
-- **System Metrics Monitoring** - CPU, memory, disk, and network usage
-- **Method Performance Traces** - Track Meteor Method execution with operation-level profiling
+- **System Metrics Monitoring** - CPU, memory, disk, network, V8 heap, event loop utilization, and process resource usage
+- **Method Performance Traces** - Track Meteor Method execution with operation-level profiling and COLLSCAN detection
 - **Publication Monitoring** - Monitor publication performance and subscriptions
+- **Publication Efficiency Analysis** - Detect over-fetching (missing field projections) and unbounded cursors
 - **Error Tracking** - Automatic server-side and client-side error capture with browser context
 - **Log Collection** - Capture `console.*` and Meteor `Log.*` output with structured metadata and sampling
 - **HTTP Request Monitoring** - Track outgoing HTTP requests
-- **Database Query Monitoring** - MongoDB query performance tracking
+- **Outbound HTTP Instrumentation** - Zero-patch `diagnostics_channel` tracing for outbound HTTP/HTTPS and `fetch` requests
+- **Database Query Monitoring** - MongoDB query performance tracking with COLLSCAN flagging
 - **Live Query Monitoring** - Per-observer driver detection for Change Streams (Meteor 3.5+), oplog, and polling
+- **DNS Timing** - Measure DNS resolution latency by wrapping `dns.lookup` and `dns.resolve`
+- **CPU Profiling** - On-demand inspector-based CPU profiling when CPU exceeds a configurable threshold
+- **Deprecated API Detection** - Track sync vs async Meteor API usage to guide Meteor 3.x migration
+- **Environment Snapshots** - Periodic capture of package versions, Node.js flags, and OS metadata
+- **Vulnerability Scanning** - Hourly `npm audit` with severity reporting for high/critical CVEs
 - **Real User Monitoring (RUM)** - Browser-side Core Web Vitals (LCP, FID, CLS, TTFB, FCP, TTI) with automatic performance warnings
 - **SPA Route Tracking** - Automatic performance collection on every route change
 - **Session Tracking** - 30-minute user sessions with localStorage persistence
 - **Browser Context** - Automatic device, browser, OS, and network information collection
 - **Batch Processing** - Efficient batching and async delivery to minimize performance impact
+- **Worker Thread Offloading** - Optional `worker_threads` pool for compression to keep the host event loop clear
 
 ## Installation
 
@@ -89,7 +97,15 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
     "logLevels": ["warn", "error", "fatal"],
     "logSampleRate": 0.5,
     "captureIndexUsage": true,
-    "indexUsageSampleRate": 0.05
+    "indexUsageSampleRate": 0.05,
+    "collectDnsTimings": true,
+    "collectOutboundHttp": true,
+    "collectCpuProfiles": true,
+    "cpuProfileThreshold": 80,
+    "collectDeprecatedApis": true,
+    "collectPublications": true,
+    "collectEnvironment": true,
+    "collectVulnerabilities": true
   },
   "public": {
     "skysignal": {
@@ -168,6 +184,13 @@ Meteor.startup(() => {
 | `collectionStatsInterval` | Number | `300000` | Collection stats interval (5 minutes) |
 | `ddpConnectionsInterval` | Number | `30000` | DDP connection updates interval (30 seconds) |
 | `jobsInterval` | Number | `30000` | Background job stats interval (30 seconds) |
+| `dnsTimingsInterval` | Number | `60000` | DNS timing aggregation interval (1 minute) |
+| `outboundHttpInterval` | Number | `60000` | Outbound HTTP aggregation interval (1 minute) |
+| `cpuProfileCheckInterval` | Number | `30000` | CPU check interval for threshold profiling (30 seconds) |
+| `deprecatedApisInterval` | Number | `300000` | Deprecated API usage reporting interval (5 minutes) |
+| `publicationsInterval` | Number | `300000` | Publication efficiency reporting interval (5 minutes) |
+| `environmentInterval` | Number | `1800000` | Environment snapshot interval (30 minutes) |
+| `vulnerabilitiesInterval` | Number | `3600000` | Vulnerability scan interval (1 hour) |
 
 ### Feature Flags
 
@@ -184,6 +207,13 @@ Meteor.startup(() => {
 | `collectJobs` | Boolean | `true` | Collect background job metrics |
 | `collectLogs` | Boolean | `true` | Collect server-side logs from console and Meteor Log |
 | `collectRUM` | Boolean | `false` | Client-side RUM (disabled by default, requires publicKey) |
+| `collectDnsTimings` | Boolean | `true` | Collect DNS resolution latency by wrapping `dns.lookup`/`dns.resolve` |
+| `collectOutboundHttp` | Boolean | `true` | Collect outbound HTTP metrics via `diagnostics_channel` (Node 16+) |
+| `collectCpuProfiles` | Boolean | `true` | Enable on-demand CPU profiling when CPU exceeds threshold |
+| `collectDeprecatedApis` | Boolean | `true` | Track sync vs async Meteor API usage (migration readiness) |
+| `collectPublications` | Boolean | `true` | Detect publication over-fetching and missing projections |
+| `collectEnvironment` | Boolean | `true` | Capture environment metadata (packages, flags, OS info) |
+| `collectVulnerabilities` | Boolean | `true` | Run `npm audit` scans and report high/critical CVEs |
 
 ### MongoDB Pool Configuration
 
@@ -215,6 +245,14 @@ Meteor.startup(() => {
 | `maxBatchRetries` | Number | `3` | Max retries for failed batches |
 | `requestTimeout` | Number | `3000` | API request timeout (3 seconds) |
 | `maxMemoryMB` | Number | `50` | Max memory (MB) for batches |
+
+### CPU Profiling Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `cpuProfileThreshold` | Number | `80` | CPU usage percentage to trigger an on-demand profile |
+| `cpuProfileDuration` | Number | `10000` | Duration (ms) of the CPU profile sample |
+| `cpuProfileCooldown` | Number | `300000` | Minimum time (ms) between consecutive profiles (5 minutes) |
 
 ### Worker Offload (Large Pools)
 
@@ -260,10 +298,16 @@ The agent automatically collects:
 - **CPU Usage** - Overall CPU utilization percentage
 - **CPU Cores** - Number of CPU cores available
 - **Load Average** - 1m, 5m, 15m load averages
-- **Memory Usage** - Total, used, free, and percentage
+- **Memory Usage** - Total, used, free, and percentage (heap, external, RSS)
+- **Event Loop Utilization** - 0-1 ratio of how busy the event loop is (Node 14.10+)
+- **V8 Heap Statistics** - Per-space breakdown (new_space, old_space, code_space, etc.), native context count, detached context leak detection
+- **Process Resource Usage** - User/system CPU time, voluntary/involuntary context switches, filesystem reads/writes (via `process.resourceUsage()`)
+- **Active Resources** - Handle/request counts by type (Timer, TCPWrap, FSReqCallback) for resource leak detection (Node 17+)
+- **Container Memory Limit** - cgroup memory constraint for containerized deployments (Node 19+)
 - **Disk Usage** - Disk space utilization (platform-dependent)
 - **Network Traffic** - Bytes in/out (platform-dependent)
 - **Process Count** - Number of running processes (platform-dependent)
+- **Agent Version** - Tracks the installed agent version for compatibility checks
 
 Collected every 60 seconds by default.
 
@@ -273,6 +317,8 @@ Automatic instrumentation of Meteor Methods:
 - Method name and execution time
 - Operation-level breakdown (DB queries, async operations, compute time)
 - Detailed MongoDB operation tracking with explain() support
+- **COLLSCAN detection** - Flags queries performing full collection scans (no index used)
+- **Slow aggregation pipeline capture** - Captures sanitized pipeline stages for slow aggregations
 - N+1 query detection and slow query analysis
 - `this.unblock()` analysis with optimization recommendations
 - Wait time tracking (DDP queue, connection pool)
@@ -325,6 +371,82 @@ Track `msavin:sjobs` (Steve Jobs) and other job packages:
 - Queue length and worker utilization
 - Failed job tracking with error details
 - Job type categorization
+
+### DNS Timing
+
+Measure DNS resolution latency to detect slow or misconfigured resolvers:
+- Wraps `dns.lookup()` and `dns.resolve()` without replacing them
+- Per-hostname resolution times with avg, P95, and max latency
+- Failure counts and error tracking
+- Ring buffer (last 500 samples) to bound memory
+- Particularly useful in Docker/K8s environments where DNS is a common latency source
+
+Reported every 60 seconds by default.
+
+### Outbound HTTP Instrumentation
+
+Track outbound HTTP/HTTPS requests using Node.js `diagnostics_channel` (Node 16+):
+- Zero monkey-patching — uses the same mechanism as OpenTelemetry and Undici
+- Request timing breakdown: DNS, connect, TLS handshake, TTFB, total duration
+- Request/response metadata: method, host, path, status code, content-length
+- Error rates for external API dependencies
+- Aggregated per endpoint to minimize cardinality
+
+Reported every 60 seconds by default.
+
+### CPU Profiling (On-Demand)
+
+Automatic CPU profiling when CPU usage spikes above a configurable threshold:
+- Uses the built-in `inspector` module (same as Chrome DevTools) — zero dependencies
+- Triggered automatically when CPU exceeds the threshold (default: 80%)
+- Sends a **summary** (top functions by self-time), not raw profile data
+- Configurable duration (default: 10s) and cooldown (default: 5 min between profiles)
+- Minimal overhead when not actively profiling
+
+### Deprecated API Detection
+
+Track synchronous vs asynchronous Meteor API usage to measure migration readiness:
+- Wraps `Mongo.Collection` prototype methods to count sync vs async calls
+- Tracks `Collection.find().fetch()` vs `fetchAsync()`, `findOne()` vs `findOneAsync()`, etc.
+- Tracks `Meteor.call()` vs `Meteor.callAsync()`
+- Per-collection counters with negligible overhead (just increments)
+- Helps prioritize Meteor 3.x async migration efforts
+
+Reported every 5 minutes by default.
+
+### Publication Efficiency Analysis
+
+Detect over-fetching and unbounded publications:
+- Wraps `Meteor.publish` to intercept returned cursors
+- Checks `_cursorDescription.options.fields` for missing projections (over-fetching flag)
+- Tracks document counts per publication (average and max)
+- Flags publications returning large result sets without limits
+- Per-publication call counts and efficiency scores
+
+Reported every 5 minutes by default.
+
+### Environment Snapshots
+
+Periodic capture of application environment metadata:
+- Installed package versions from `process.versions` and `package.json`
+- Node.js flags (`process.execArgv`)
+- Environment variable **keys** (NOT values — security-conscious)
+- OS platform, release, CPU count, total memory
+- Collected immediately on start, then refreshed periodically
+
+Reported every 30 minutes by default.
+
+### Vulnerability Scanning
+
+Automated security scanning for known package vulnerabilities:
+- Runs `npm audit --json` on a configurable schedule
+- Supports both npm audit v6 and v7+ JSON formats
+- Only reports **high** and **critical** severity vulnerabilities to reduce noise
+- Tracks: package name, severity, advisory title, fix availability
+- Deduplicates results (skips reporting if unchanged since last scan)
+- 30-second timeout on `npm audit` to prevent blocking
+
+Reported every 1 hour by default. Initial scan delayed 60s after startup.
 
 ### Error Tracking
 
@@ -731,6 +853,43 @@ Main agent singleton instance.
 - **Issues**: [https://github.com/skysignalapm/agent/issues](https://github.com/skysignalapm/agent/issues)
 
 ## Changelog
+
+### v1.0.15 (New Features)
+
+**7 new collectors**, enhanced system metrics, COLLSCAN detection, sendBeacon transport, and worker thread offloading.
+
+#### New Collectors
+- **DNS Timing** (`DnsTimingCollector`) - Wraps `dns.lookup` and `dns.resolve` to measure DNS resolution latency. Tracks per-hostname timing, P95/max latency, and failure counts. Identifies slow resolvers in Docker/K8s environments.
+- **Outbound HTTP** (`DiagnosticsChannelCollector`) - Uses Node.js `diagnostics_channel` API (Node 16+) to instrument outbound HTTP/HTTPS requests without monkey-patching. Captures timing breakdown (DNS, connect, TLS, TTFB), status codes, and error rates for external dependencies.
+- **CPU Profiling** (`CpuProfiler`) - On-demand CPU profiling via the built-in `inspector` module. Automatically triggers when CPU exceeds a configurable threshold (default: 80%), captures a 10-second profile, and sends a summary of top functions by self-time. Configurable cooldown prevents over-profiling.
+- **Deprecated API Detection** (`DeprecatedApiCollector`) - Wraps `Mongo.Collection` prototype methods and `Meteor.call` to count sync vs async invocations. Tracks `find().fetch()` vs `fetchAsync()`, `findOne()` vs `findOneAsync()`, `insert/update/remove` vs async variants. Helps measure Meteor 3.x migration readiness.
+- **Publication Efficiency** (`PublicationTracer`) - Wraps `Meteor.publish` to intercept returned cursors. Detects publications missing field projections (over-fetching) and those returning large document sets without limits. Reports per-publication call counts, document averages, and efficiency scores.
+- **Environment Snapshots** (`EnvironmentCollector`) - Captures installed package versions (`process.versions` + `package.json`), Node.js flags, environment variable keys (not values), and OS metadata. Collected immediately on start, then refreshed every 30 minutes.
+- **Vulnerability Scanning** (`VulnerabilityCollector`) - Runs `npm audit --json` hourly (with 30s timeout). Parses both v6 and v7+ audit formats. Reports high/critical vulnerabilities with package name, severity, advisory title, and fix availability. Deduplicates unchanged results.
+
+#### Enhanced System Metrics
+- **Event Loop Utilization (ELU)** - 0-1 ratio of event loop busyness via `performance.eventLoopUtilization()` (Node 14.10+)
+- **V8 Heap Statistics** - Per-heap-space breakdown (new_space, old_space, code_space, etc.) via `v8.getHeapStatistics()` and `v8.getHeapSpaceStatistics()`. Includes native context count and detached context leak detection.
+- **Process Resource Usage** - User/system CPU time, voluntary/involuntary context switches, filesystem reads/writes via `process.resourceUsage()`
+- **Active Resources** - Handle/request counts by type (Timer, TCPWrap, FSReqCallback, etc.) via `process.getActiveResourcesInfo()` (Node 17+) for resource leak detection
+- **Container Memory Limit** - cgroup memory constraint via `process.constrainedMemory()` (Node 19+) for containerized deployments
+- **Agent Version** - `agentVersion` field added to every system metrics payload for compatibility tracking
+
+#### Method Tracer Enhancements
+- **COLLSCAN flagging** - Slow queries are now flagged with `collscan: true` when `explain()` data indicates a full collection scan (no index used, or `totalDocsExamined > 0` with `totalKeysExamined === 0`). Applied both at initial detection time and retroactively after async explain completes.
+- **Slow aggregation pipeline capture** - Slow aggregation operations now include the sanitized pipeline stages in the slow query entry for debugging.
+
+#### Client-Side Transport Improvements
+- **`sendBeacon` primary transport** - `ErrorTracker` and `RUMClient` now use `navigator.sendBeacon()` as the primary transport for small payloads (<60KB for errors, all RUM batches). This is truly fire-and-forget with zero async overhead — no promises, no callbacks, no event loop work. Falls back to `fetch` with `keepalive` for large payloads or when sendBeacon returns false.
+- **Public key via query param** - `sendBeacon` cannot set custom headers, so the public key is passed as `?pk=` query parameter (lazily cached URL). The `X-SkySignal-Public-Key` header is still sent on fetch fallback for backward compatibility.
+
+#### Batching & Infrastructure
+- **7 new batch types** in `SkySignalClient`: `dnsMetrics`, `outboundHttp`, `cpuProfiles`, `deprecatedApis`, `publications`, `environment`, `vulnerabilities` — each with dedicated REST endpoints and payload keys
+- **Worker thread pool** (`WorkerPool` + `compressionWorker`) - Optional `worker_threads`-based compression offloading to prevent gzip work from blocking the host application's event loop. Lazy initialization, auto-restart on crash, and graceful main-thread fallback.
+
+#### Configuration
+- **18 new config fields** added to `DEFAULT_CONFIG` and `validateConfig()` for all new collectors: `collectDnsTimings`, `dnsTimingsInterval`, `collectOutboundHttp`, `outboundHttpInterval`, `collectCpuProfiles`, `cpuProfileThreshold`, `cpuProfileDuration`, `cpuProfileCooldown`, `cpuProfileCheckInterval`, `collectDeprecatedApis`, `deprecatedApisInterval`, `collectPublications`, `publicationsInterval`, `collectEnvironment`, `environmentInterval`, `collectVulnerabilities`, `vulnerabilitiesInterval`
+- All new collectors are **enabled by default** and use staggered startup to avoid CPU spikes at boot
 
 ### v1.0.14 (Bug Fix)
 - **Silent production logging** - Replaced bare `console.log()` calls with debug-guarded `_log()` helpers across all collectors (`HTTPCollector`, `DDPCollector`, `DDPQueueCollector`, `LiveQueriesCollector`, `MongoCollectionStatsCollector`, `BaseJobMonitor`, `SteveJobsMonitor`, `JobCollector`). Previously, operational messages like "Batched 1 HTTP requests", "Sent 18 subscription records", and job lifecycle events were unconditionally printed to stdout regardless of the `debug` setting. All informational logs are now silent by default and only appear when `debug: true` is set in the agent configuration.

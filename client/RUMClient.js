@@ -229,34 +229,66 @@ export default class RUMClient {
 	}
 
 	/**
-	 * Send measurements to SkySignal server
+	 * Get the beacon URL with public key as query param (lazily cached).
+	 * sendBeacon cannot set custom headers, so we pass the key via ?pk=.
+	 * @private
+	 * @returns {string}
+	 */
+	_getBeaconUrl() {
+		if (!this._beaconUrl) {
+			const base = this.config.endpoint.startsWith('http')
+				? this.config.endpoint
+				: `${window.location.origin}${this.config.endpoint}`;
+			this._beaconUrl = `${base}?pk=${encodeURIComponent(this.config.publicKey)}`;
+		}
+		return this._beaconUrl;
+	}
+
+	/**
+	 * Send measurements to SkySignal server.
+	 * Uses navigator.sendBeacon as primary transport (zero async overhead),
+	 * falls back to fetch with keepalive if sendBeacon is unavailable or
+	 * returns false (payload too large / browser limit hit).
 	 * @private
 	 */
 	_send(measurements) {
-		// Build payload
-		const payload = {
+		const json = JSON.stringify({
 			measurements: measurements.map(m => ({
 				...m,
-				// Ensure timestamp is ISO string
 				timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp
 			}))
-		};
+		});
 
-		// Determine URL (relative or absolute)
-		const url = this.config.endpoint.startsWith('http')
-			? this.config.endpoint
-			: `${window.location.origin}${this.config.endpoint}`;
-
-		if (this.config.debug) {
-			console.log('[SkySignal RUM] Sending measurements', {
-				count: measurements.length,
-				url: url,
-				measurements
-			});
+		// Try sendBeacon first (zero async overhead, true fire-and-forget)
+		if (navigator.sendBeacon) {
+			const url = this._getBeaconUrl();
+			const blob = new Blob([json], { type: 'application/json' });
+			const queued = navigator.sendBeacon(url, blob);
+			if (queued) {
+				if (this.config.debug) {
+					console.log('[SkySignal RUM] Beacon sent', { count: measurements.length });
+				}
+				return;
+			}
+			// sendBeacon returned false — fall through to fetch
 		}
 
-		// Fire-and-forget HTTP request with keepalive
-		// keepalive ensures the request completes even if the page is unloaded
+		// Fallback: fetch with keepalive
+		this._sendFetch(json, measurements.length);
+	}
+
+	/**
+	 * Fallback transport using fetch with keepalive.
+	 * Used when sendBeacon is unavailable or returns false.
+	 * @private
+	 */
+	_sendFetch(json, count) {
+		const url = this._getBeaconUrl();
+
+		if (this.config.debug) {
+			console.log('[SkySignal RUM] Sending via fetch fallback', { count });
+		}
+
 		try {
 			fetch(url, {
 				method: 'POST',
@@ -264,24 +296,22 @@ export default class RUMClient {
 					'Content-Type': 'application/json',
 					'X-SkySignal-Public-Key': this.config.publicKey
 				},
-				body: JSON.stringify(payload),
-				keepalive: true // Critical for page unload scenarios
+				body: json,
+				keepalive: true
 			}).then(response => {
 				if (this.config.debug) {
 					if (response.ok) {
-						console.log('[SkySignal RUM] Measurements sent successfully');
+						console.log('[SkySignal RUM] Measurements sent successfully via fetch');
 					} else {
 						console.warn('[SkySignal RUM] Server returned error:', response.status);
 					}
 				}
 			}).catch(error => {
-				// Silently fail - we don't want RUM collection to break the app
 				if (this.config.debug) {
 					console.error('[SkySignal RUM] Failed to send measurements:', error);
 				}
 			});
 		} catch (error) {
-			// Fetch not available or other error
 			if (this.config.debug) {
 				console.error('[SkySignal RUM] Failed to send measurements:', error);
 			}
