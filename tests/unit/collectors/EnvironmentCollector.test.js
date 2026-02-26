@@ -38,14 +38,14 @@ describe('EnvironmentCollector', function () {
   // ==========================================
   describe('_getPackageVersions', function () {
 
-    it('includes process.versions entries', function () {
-      const versions = collector._getPackageVersions();
+    it('includes process.versions entries', async function () {
+      const versions = await collector._getPackageVersions();
       expect(versions).to.have.property('node');
       expect(versions).to.have.property('v8');
     });
 
-    it('returns an object', function () {
-      const versions = collector._getPackageVersions();
+    it('returns an object', async function () {
+      const versions = await collector._getPackageVersions();
       expect(versions).to.be.an('object');
     });
   });
@@ -113,20 +113,20 @@ describe('EnvironmentCollector', function () {
   // ==========================================
   describe('_collect', function () {
 
-    it('sends metric on first call', function () {
-      collector._collect();
+    it('sends metric on first call', async function () {
+      await collector._collect();
       expect(mockClient.addEnvironmentMetric.calledOnce).to.be.true;
     });
 
-    it('does not send metric on second identical call', function () {
-      collector._collect();
-      collector._collect();
+    it('does not send metric on second identical call', async function () {
+      await collector._collect();
+      await collector._collect();
       // Second call should be skipped (no change)
       expect(mockClient.addEnvironmentMetric.calledOnce).to.be.true;
     });
 
-    it('sends metric fields with expected structure', function () {
-      collector._collect();
+    it('sends metric fields with expected structure', async function () {
+      await collector._collect();
       const metric = mockClient.addEnvironmentMetric.firstCall.args[0];
       expect(metric).to.have.property('timestamp').that.is.instanceOf(Date);
       expect(metric).to.have.property('host', 'test-host');
@@ -137,9 +137,9 @@ describe('EnvironmentCollector', function () {
       expect(metric).to.have.property('os').that.is.an('object');
     });
 
-    it('handles missing client gracefully', function () {
+    it('handles missing client gracefully', async function () {
       collector.client = null;
-      expect(() => collector._collect()).to.not.throw();
+      await collector._collect(); // Should not throw
     });
   });
 
