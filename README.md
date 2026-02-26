@@ -854,6 +854,11 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.17 (Bug Fixes)
+
+- **DDP queue unblock recursion fix** - Restructured `DDPQueueCollector.wrapUnblock()` to eliminate a remaining infinite recursion path. The catch block previously retried calling `originalUnblock()` after a failure, but `originalUnblock` can itself be a wrapper from another layer (e.g., `MethodTracer`). If that wrapper threw, the retry would re-enter it, creating unbounded mutual recursion and `RangeError: Maximum call stack size exceeded`. The fix sets the `unblocked` guard immediately on entry, isolates metrics collection in its own try/catch so failures are non-fatal, and calls `originalUnblock()` exactly once with no retry. (fixes [#7](https://github.com/SkySignalAPM/agent/issues/7))
+- **Console error object serialization** - `ErrorTracker` now properly serializes object arguments passed to `console.error()` using `JSON.stringify` instead of `String()`. Previously, `console.error('test', {a:1, b:2})` would be captured as `"test [object Object]"` — it now correctly captures `"test {"a":1,"b":2}"`. The same fix applies to `UnhandledRejection` events where the rejection reason is a plain object rather than an Error instance. Serialization is depth-limited (5 levels) and size-capped (5KB) to prevent oversized payloads from deeply nested objects. Circular references are detected and replaced with `"[Circular]"`. (fixes [#10](https://github.com/SkySignalAPM/agent/issues/10))
+
 ### v1.0.16 (Bug Fixes)
 
 - **DDP queue infinite recursion fix** - Removed `finally` block in `DDPQueueCollector._hijackMethodHandler` that unconditionally called `unblock()` after every method invocation. When sessions were wrapped more than once (e.g., agent stop/restart during hot reload), the stacked `finally` blocks triggered cross-layer recursion through the original `unblock` reference, causing `RangeError: Maximum call stack size exceeded`. Added a `_skySignalDDPQueueWrapped` sentinel to prevent double-wrapping sessions entirely. (fixes [#5](https://github.com/SkySignalAPM/agent/issues/5))

@@ -229,9 +229,12 @@ export default class ErrorTracker {
 		window.addEventListener('unhandledrejection', async (event) => {
 			try {
 				const reason = event.reason;
+				const message = reason instanceof Error
+					? (reason.message || String(reason))
+					: this._serializeArg(reason);
 				await this._handleError({
 					type: 'UnhandledRejection',
-					message: reason?.message || String(reason),
+					message,
 					stack: reason?.stack,
 					timestamp: new Date(),
 					url: window.location.href,
@@ -252,15 +255,16 @@ export default class ErrorTracker {
 	 */
 	_setupConsoleErrorCapture() {
 		const originalConsoleError = console.error;
+		const self = this;
 		console.error = async (...args) => {
 			// Call original console.error
 			originalConsoleError.apply(console, args);
 
 			// Capture error for tracking
 			try {
-				await this._handleError({
+				await self._handleError({
 					type: 'ConsoleError',
-					message: args.map(arg => String(arg)).join(' '),
+					message: args.map(arg => self._serializeArg(arg)).join(' '),
 					timestamp: new Date(),
 					url: window.location.href,
 					userAgent: navigator.userAgent
@@ -301,6 +305,77 @@ export default class ErrorTracker {
 			error.lineno || ''
 		];
 		return parts.join('|');
+	}
+
+	/**
+	 * Serialize a single argument to a readable string.
+	 * Uses JSON.stringify with depth limiting for objects, avoiding [object Object].
+	 * @private
+	 * @param {*} arg - The argument to serialize
+	 * @param {number} [maxDepth=5] - Maximum nesting depth for objects
+	 * @param {number} [maxLength=5120] - Maximum serialized string length in characters
+	 * @returns {string}
+	 */
+	_serializeArg(arg, maxDepth = 5, maxLength = 5120) {
+		if (arg === null) return 'null';
+		if (arg === undefined) return 'undefined';
+		if (typeof arg === 'string') return arg;
+		if (typeof arg === 'number' || typeof arg === 'boolean') return String(arg);
+
+		if (arg instanceof Error) {
+			return arg.stack || `${arg.name}: ${arg.message}`;
+		}
+
+		if (typeof arg !== 'object') return String(arg);
+
+		// Depth-limited JSON serialization
+		try {
+			const truncated = this._truncateDepth(arg, maxDepth, new WeakSet());
+			const result = JSON.stringify(truncated);
+
+			if (result && result.length > maxLength) {
+				return result.substring(0, maxLength) + '...[truncated]';
+			}
+
+			return result || String(arg);
+		} catch (e) {
+			// Last resort fallback
+			try {
+				return String(arg);
+			} catch (e2) {
+				return '[unserializable]';
+			}
+		}
+	}
+
+	/**
+	 * Recursively truncate an object/array at a given depth to prevent
+	 * oversized serialized output. Also handles circular references.
+	 * @private
+	 * @param {*} value - The value to truncate
+	 * @param {number} depth - Remaining depth budget
+	 * @param {WeakSet} seen - Tracks visited objects for circular reference detection
+	 * @returns {*} A depth-limited copy safe for JSON.stringify
+	 */
+	_truncateDepth(value, depth, seen) {
+		if (value === null || typeof value !== 'object') return value;
+
+		if (seen.has(value)) return '[Circular]';
+		seen.add(value);
+
+		if (depth <= 0) {
+			return Array.isArray(value) ? `[Array(${value.length})]` : '[Object]';
+		}
+
+		if (Array.isArray(value)) {
+			return value.map(item => this._truncateDepth(item, depth - 1, seen));
+		}
+
+		const result = {};
+		for (const key of Object.keys(value)) {
+			result[key] = this._truncateDepth(value[key], depth - 1, seen);
+		}
+		return result;
 	}
 
 	/**
