@@ -854,6 +854,11 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.18 (Container-Aware Metrics)
+
+- **Container-aware memory usage** - `SystemMetricsCollector` now uses `process.constrainedMemory()` (Node 19+) to detect cgroup memory limits in containerized deployments. When a cgroup limit is present, memory usage is calculated as `processMemory.rss / constrainedMemory * 100` instead of `(os.totalmem() - os.freemem()) / os.totalmem() * 100`. The OS-level calculation counts kernel buffer/cache as "used", which dramatically overstates actual memory pressure in containers (e.g., reporting 89% when real RSS usage is 27%).
+- **Process-level CPU measurement** - Replaced OS-level idle-time CPU calculation with `process.cpuUsage()` delta tracking. The previous approach measured total system CPU across all processes, which is misleading for a single Node.js application in a shared or containerized environment. Now tracks user + system CPU microseconds between collection intervals, divided by available parallelism, to report the actual CPU consumed by the monitored Meteor process.
+
 ### v1.0.17 (Bug Fixes, Performance & Testing)
 
 - **DDP queue unblock recursion fix** - Restructured `DDPQueueCollector.wrapUnblock()` to eliminate a remaining infinite recursion path. The catch block previously retried calling `originalUnblock()` after a failure, but `originalUnblock` can itself be a wrapper from another layer (e.g., `MethodTracer`). If that wrapper threw, the retry would re-enter it, creating unbounded mutual recursion and `RangeError: Maximum call stack size exceeded`. The fix sets the `unblocked` guard immediately on entry, isolates metrics collection in its own try/catch so failures are non-fatal, and calls `originalUnblock()` exactly once with no retry. (fixes [#7](https://github.com/SkySignalAPM/agent/issues/7))
