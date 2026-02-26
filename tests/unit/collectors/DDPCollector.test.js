@@ -104,7 +104,7 @@ describe('DDPCollector', function () {
 
       const sub = collector.subscriptions.get('sub1');
       expect(sub.status).to.equal('ready');
-      expect(sub.readyAt).to.be.instanceOf(Date);
+      expect(sub.readyAt).to.be.a('number');
       expect(sub.responseTime).to.be.a('number');
     });
 
@@ -137,7 +137,7 @@ describe('DDPCollector', function () {
 
       const sub = collector.subscriptions.get('sub1');
       expect(sub.status).to.equal('error');
-      expect(sub.stoppedAt).to.be.instanceOf(Date);
+      expect(sub.stoppedAt).to.be.a('number');
       expect(sub.errorMessage).to.equal('404: Not found');
     });
 
@@ -167,7 +167,7 @@ describe('DDPCollector', function () {
 
       const sub = collector.subscriptions.get('sub1');
       expect(sub.status).to.equal('stopped');
-      expect(sub.stoppedAt).to.be.instanceOf(Date);
+      expect(sub.stoppedAt).to.be.a('number');
     });
 
     it('tracks "added" — increments documentsAdded on ready subscriptions', function () {
@@ -274,7 +274,7 @@ describe('DDPCollector', function () {
 
       const sent = mockClient.sendDDPConnections.firstCall.args[0];
       expect(sent[0].status).to.equal('disconnected');
-      expect(sent[0].disconnectedAt).to.be.instanceOf(Date);
+      expect(sent[0].disconnectedAt).to.be.a('number');
     });
 
     it('cleans up wrappedSessions tracking', function () {

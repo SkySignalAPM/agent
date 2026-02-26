@@ -533,11 +533,12 @@ describe('MongoPoolCollector', function () {
       expect(global._skySignalPoolWaitTimes[0].connectionId).to.equal(1);
     });
 
-    it('limits to 1000 samples', function () {
-      for (let i = 0; i < 1010; i++) {
+    it('limits samples via batch eviction', function () {
+      // Eviction triggers at 1100, trims back to 1000
+      for (let i = 0; i < 1150; i++) {
         collector._recordPoolWaitTime(i);
       }
-      expect(global._skySignalPoolWaitTimes.length).to.be.at.most(1000);
+      expect(global._skySignalPoolWaitTimes.length).to.be.at.most(1050);
     });
   });
 
