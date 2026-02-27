@@ -312,8 +312,8 @@ describe('MongoPoolCollector', function () {
       // Average of 1-100 = 50.5 → rounded = 51
       expect(metrics.avgCheckoutTime).to.equal(51);
       expect(metrics.maxCheckoutTime).to.equal(100);
-      // p95: Math.floor(100 * 0.95) = 95 → sorted[95] = 96
-      expect(metrics.p95CheckoutTime).to.equal(96);
+      // p95: Math.ceil(100 * 0.95) - 1 = 94 → sorted[94] = 95
+      expect(metrics.p95CheckoutTime).to.equal(95);
     });
 
     it('handles single sample', function () {

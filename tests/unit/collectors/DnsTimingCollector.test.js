@@ -105,10 +105,10 @@ describe('DnsTimingCollector', function () {
       collector._collect();
 
       const metric = mockClient.addDnsMetric.firstCall.args[0];
-      // Math.floor(100 * 0.5) = 50 → durations[50] = 51
-      expect(metric.p50Duration).to.equal(51);
-      expect(metric.p95Duration).to.equal(96);
-      expect(metric.p99Duration).to.equal(100);
+      // Math.ceil(100 * 0.5) - 1 = 49 → durations[49] = 50
+      expect(metric.p50Duration).to.equal(50);
+      expect(metric.p95Duration).to.equal(95);
+      expect(metric.p99Duration).to.equal(99);
       expect(metric.maxDuration).to.equal(100);
     });
 

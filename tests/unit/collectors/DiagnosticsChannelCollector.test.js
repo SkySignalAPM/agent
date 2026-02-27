@@ -127,10 +127,10 @@ describe('DiagnosticsChannelCollector', function () {
       collector._collect();
 
       const metric = mockClient.addOutboundHttpMetric.firstCall.args[0];
-      // Math.floor(100 * 0.5) = 50 → times[50] = 51
-      expect(metric.p50ResponseTime).to.equal(51);
-      expect(metric.p95ResponseTime).to.equal(96);
-      expect(metric.p99ResponseTime).to.equal(100);
+      // Math.ceil(100 * 0.5) - 1 = 49 → times[49] = 50
+      expect(metric.p50ResponseTime).to.equal(50);
+      expect(metric.p95ResponseTime).to.equal(95);
+      expect(metric.p99ResponseTime).to.equal(99);
     });
 
     it('groups status codes by Nxx', function () {
