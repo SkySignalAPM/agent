@@ -21,9 +21,14 @@ describe('SkySignalClient', function () {
     client = new SkySignalClient({
       apiKey: 'sk_test_123',
       endpoint: 'http://localhost:3000',
+      debug: false,
       batchSize: 50,
       batchSizeBytes: 256 * 1024,
-      flushInterval: 10000
+      flushInterval: 10000,
+      requestTimeout: 15000,
+      maxBatchRetries: 3,
+      traceSampleRate: 1.0,
+      rumSampleRate: 0.5
     });
   });
 
@@ -46,7 +51,7 @@ describe('SkySignalClient', function () {
   // ==========================================
   describe('constructor', function () {
 
-    it('sets default values', function () {
+    it('sets values from options', function () {
       expect(client.apiKey).to.equal('sk_test_123');
       expect(client.batchSize).to.equal(50);
       expect(client.batchSizeBytes).to.equal(256 * 1024);
@@ -84,11 +89,12 @@ describe('SkySignalClient', function () {
       const custom = new SkySignalClient({
         apiKey: 'sk_custom',
         endpoint: 'https://custom.example.com',
+        debug: true,
         batchSize: 100,
         batchSizeBytes: 512 * 1024,
         flushInterval: 5000,
         requestTimeout: 30000,
-        maxRetries: 5,
+        maxBatchRetries: 5,
         traceSampleRate: 0.5,
         rumSampleRate: 1.0
       });

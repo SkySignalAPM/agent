@@ -10,9 +10,9 @@ describe('config', function () {
     });
 
     it('has correct default batch settings', function () {
-      expect(DEFAULT_CONFIG.batchSize).to.equal(50);
-      expect(DEFAULT_CONFIG.batchSizeBytes).to.equal(256 * 1024);
-      expect(DEFAULT_CONFIG.flushInterval).to.equal(10000);
+      expect(DEFAULT_CONFIG.batchSize).to.equal(100);
+      expect(DEFAULT_CONFIG.batchSizeBytes).to.equal(1024 * 1024);
+      expect(DEFAULT_CONFIG.flushInterval).to.equal(60000);
     });
 
     it('has sample rates between 0 and 1', function () {
