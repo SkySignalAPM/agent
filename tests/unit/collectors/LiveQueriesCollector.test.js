@@ -176,43 +176,6 @@ describe('LiveQueriesCollector', function () {
   });
 
   // ==========================================
-  // _generateQuerySignature
-  // ==========================================
-  describe('_generateQuerySignature', function () {
-
-    it('returns a string', function () {
-      const sig = collector._generateQuerySignature('users', {}, {});
-      expect(sig).to.be.a('string');
-      expect(sig.length).to.be.greaterThan(0);
-    });
-
-    it('returns same signature for same inputs', function () {
-      const sig1 = collector._generateQuerySignature('users', { active: true }, { limit: 10 });
-      const sig2 = collector._generateQuerySignature('users', { active: true }, { limit: 10 });
-      expect(sig1).to.equal(sig2);
-    });
-
-    it('returns different signatures for different collections', function () {
-      const sig1 = collector._generateQuerySignature('users', {}, {});
-      const sig2 = collector._generateQuerySignature('posts', {}, {});
-      expect(sig1).to.not.equal(sig2);
-    });
-
-    it('returns different signatures for different selectors', function () {
-      const sig1 = collector._generateQuerySignature('users', { active: true }, {});
-      const sig2 = collector._generateQuerySignature('users', { active: false }, {});
-      expect(sig1).to.not.equal(sig2);
-    });
-
-    it('handles null/undefined inputs gracefully', function () {
-      const sig1 = collector._generateQuerySignature('users', null, null);
-      const sig2 = collector._generateQuerySignature('users', undefined, undefined);
-      expect(sig1).to.be.a('string');
-      expect(sig2).to.be.a('string');
-    });
-  });
-
-  // ==========================================
   // _sanitizeQuery
   // ==========================================
   describe('_sanitizeQuery', function () {

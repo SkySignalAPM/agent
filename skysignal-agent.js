@@ -574,20 +574,24 @@ class SkySignalAgentClass {
 					debug: this.config.debug
 				};
 
-				// Add custom performance thresholds if provided
 				if (this.config.liveQueriesPerformanceThresholds) {
 					liveQueriesCollectorOptions.performanceThresholds = this.config.liveQueriesPerformanceThresholds;
 				}
 
 				this.collectors.liveQueries = new LiveQueriesCollector(liveQueriesCollectorOptions);
+				const delay = this._getStaggerDelay();
 				setTimeout(() => {
-					if (this.started && this.collectors.liveQueries) {
-						this.collectors.liveQueries.start();
-						this._log("Live Queries monitoring started");
+					try {
+						if (this.started && this.collectors.liveQueries) {
+							this.collectors.liveQueries.start();
+						}
+					} catch (startError) {
+						this._warn("Failed to start LiveQueriesCollector:", startError.message);
 					}
-				}, this._getStaggerDelay());
+				}, delay);
+				this._log("Live query monitoring scheduled");
 			} catch (error) {
-				this._warn("Failed to start Live Queries monitoring:", error.message);
+				this._warn("Failed to create LiveQueriesCollector:", error.message);
 			}
 		}
 
