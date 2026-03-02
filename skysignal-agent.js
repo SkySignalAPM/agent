@@ -841,14 +841,18 @@ class SkySignalAgentClass {
 			return;
 		}
 
+		// Stop all collectors first so they can emit final events
+		// (e.g., BaseJobMonitor._flushPendingJobs marks running jobs as unknown)
 		Object.values(this.collectors).forEach(collector => {
 			if (collector && collector.stop) {
 				collector.stop();
 			}
 		});
 
+		// Full client shutdown: clears timers, flushes all pending batches,
+		// then sets stopped flag to prevent further sends.
 		if (this.client) {
-			this.client.flush();
+			this.client.stop();
 		}
 
 		this.started = false;
@@ -1443,6 +1447,20 @@ if (Meteor.isServer) {
 			if (!config.debug) {
 				console.log("[SkySignal] Agent started - host:", agent.config.host);
 			}
+
+			// Graceful shutdown: stop collectors and flush final data when the
+			// host app is shutting down (e.g., new deployment on Galaxy).
+			// We only register once and don't call process.exit() — the host
+			// process (or platform) manages the actual exit.
+			const shutdownAgent = () => {
+				if (agent.started) {
+					agent.stop();
+					console.log("[SkySignal] Agent stopped (graceful shutdown)");
+				}
+			};
+
+			process.once("SIGTERM", shutdownAgent);
+			process.once("SIGINT", shutdownAgent);
 		} catch (error) {
 			console.error("[SkySignal] Failed to auto-start:", error.message);
 		}
