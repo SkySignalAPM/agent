@@ -854,6 +854,12 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.21 (Nested Cgroup Fix & Uptime Metric)
+
+- **Fix container metrics on Galaxy and nested cgroup hierarchies** - The cgroup detection in v1.0.18/v1.0.20 hardcoded root paths (`/sys/fs/cgroup/memory.max`, `/sys/fs/cgroup/cpu.max`). On Galaxy and other platforms that use nested cgroup hierarchies (e.g., `/sys/fs/cgroup/kubepods.slice/kubepods-pod123.slice/...`), the root files return the parent slice limit (often 512 MB or unlimited) instead of the per-container limit (e.g., 2 GB on Galaxy "Double" plan). This caused SkySignal to report 512 MB / 92% (Critical) when the real container had 2 GB at ~23% usage. Added `_getCgroupBase()` which parses `/proc/self/cgroup` to resolve the actual cgroup path for the current process, handling both cgroup v2 (`0::/` lines) and cgroup v1 (`:memory:` controller lines). All four cgroup detection methods (`_detectMemoryLimit`, `_detectCpuQuota`, `_getContainerMemoryUsage`, `_detectCgroupMemUsagePath`) now try the resolved nested path first, then fall back to root paths for simple container setups. This is the same technique used by cAdvisor, Kubernetes metrics-server, and Galaxy's own dashboard.
+- **New `uptime` metric field** - Now collects `process.uptime()` (seconds since the Node.js process started) each collection cycle. Previously the System tab showed "Uptime: 0m" because this field was never sent by the agent.
+- **`process.constrainedMemory()` safety check** - Added `limit < Number.MAX_SAFE_INTEGER` guard to the Node 19+ `constrainedMemory()` strategy, preventing false positives when the function returns a sentinel value indicating no cgroup limit.
+
 ### v1.0.20 (Publication Context & Observer Leak Detection & Container-Aware Metrics)
 
 - **Container memory detection** - When the agent runs inside a Docker container (e.g., Meteor Galaxy), `os.totalmem()` / `os.freemem()` report host machine values, not container limits. The agent now detects cgroup memory limits via a 3-strategy fallback: `process.constrainedMemory()` (Node 19+), cgroup v2 (`/sys/fs/cgroup/memory.max`), cgroup v1 (`/sys/fs/cgroup/memory/memory.limit_in_bytes`). When a limit is found, `memoryTotal`, `memoryUsed`, `memoryFree`, and `memoryUsage` report container-level values instead of host-level values.
