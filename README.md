@@ -854,6 +854,18 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.23 (BullMQ Support & Job Package Tracking)
+
+- **BullMQ queue monitoring** - The agent now supports [BullMQ](https://docs.bullmq.io/) as a second job queue backend alongside `msavin:sjobs`. `BullMQMonitor` discovers queues automatically by scanning Redis for `bull:*:meta` key patterns and attaches `QueueEvents` listeners for real-time job lifecycle tracking (active, completed, failed, stalled, progress). Supports manual queue configuration via `bullmqQueues` for non-standard Redis key prefixes. Includes an LRU job detail cache (`jobCacheMaxSize: 2000`, `jobCacheTTL: 120000`) to fetch full job data on failure without hitting Redis on every event.
+- **Trace correlation for BullMQ** - Wraps `Queue.add()` and `Queue.addBulk()` to inject `__skysignal_traceId` into job data, linking each BullMQ job back to the originating Meteor Method trace. On job completion/failure, the trace ID is extracted from the job payload and attached to the job record, enabling end-to-end visibility from Method call through queue execution.
+- **Multi-package auto-detection** - The `JobCollector` factory now checks for both `msavin:sjobs` and `bullmq` at startup. If both packages are installed, the agent monitors both simultaneously and tags each job with its originating package. Use `jobsPackage` in settings to force a specific package if needed.
+- **`jobsPackage` field in job event payloads** - `BaseJobMonitor._sendJobEvent()` now injects `jobsPackage: this.getPackageName()` into every outbound job event. This is the single choke point for all job data, so both `SteveJobsMonitor` and `BullMQMonitor` events are tagged automatically without subclass changes.
+- **Platform: `jobsPackage` schema field and index** - Added `jobsPackage` (optional String) to the `BackgroundJobs` collection schema and a new compound index `{ customerId, siteId, jobsPackage, queuedAt }` for efficient package-filtered queries.
+- **Platform: Package-aware query methods** - All job query service methods (`getMetrics`, `getQueueStats`, `queryJobs`, `getJobTypePerformance`, `getLatencyDistribution`, `getFailureRateTrend`) now accept an optional `jobsPackage` filter parameter. Added `getJobsPackages()` to return distinct packages for a site.
+- **Platform: Jobs tab package filter** - When a site has jobs from multiple packages, the Jobs tab shows a package filter dropdown (Autocomplete) alongside the existing queue filter. All sub-tabs (Running, Failed, Scheduled, Recent Jobs, Performance, Analytics) respect the selected package filter. Job rows display a small package Chip next to the job type when multiple packages are present.
+- **BullMQ configuration options** - `bullmqRedis` (connection object), `bullmqQueues` (manual queue list), `detailedTracking` (fetch full job details on failure), `jobCacheMaxSize`, and `jobCacheTTL`. See documentation for full reference.
+- **Backward compatible** - `jobsPackage` is optional in the schema and defaults to `null`. Pre-1.0.23 agents continue to work; the UI hides the package filter when only one (or zero) packages are present.
+
 ### v1.0.22 (Graceful Shutdown & Stale Job Fixes)
 
 - **Graceful shutdown on SIGTERM/SIGINT** - The agent now registers `process.once("SIGTERM")` and `process.once("SIGINT")` handlers during auto-start. When the host app shuts down (e.g., new deployment on Galaxy), the agent stops all collectors, flushes all pending telemetry batches, and logs a shutdown message. Previously, deploys killed the agent mid-flight and all buffered data was silently dropped.
