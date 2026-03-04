@@ -775,7 +775,9 @@ class SkySignalAgentClass {
 							buildHash: this.config.buildHash,
 							interval: this.config.jobsInterval,
 							preferredPackage: this.config.jobsPackage,
-							debug: this.config.debug
+							debug: this.config.debug,
+							bullmqQueues: this.config.bullmqQueues,
+							bullmqRedis: this.config.bullmqRedis
 						});
 
 						if (jobCollector) {

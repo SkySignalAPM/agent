@@ -352,13 +352,15 @@ describe('SteveJobsMonitor', function () {
       expect(monitor.runningJobsMap.has('j3')).to.be.false;
     });
 
-    it('tracks cancellation for pending job', function () {
-      sinon.stub(monitor, 'trackJobCancelled');
+    it('treats removed pending job as completed (Steve Jobs removes via instance.remove())', function () {
+      sinon.stub(monitor, 'trackJobStart');
+      sinon.stub(monitor, 'trackJobComplete');
 
-      const doc = { _id: 'j4', name: 'test', state: 'pending' };
+      const doc = { _id: 'j4', name: 'test', state: 'pending', created: new Date() };
       monitor._handleJobRemoved(doc);
 
-      expect(monitor.trackJobCancelled.calledOnce).to.be.true;
+      expect(monitor.trackJobStart.calledOnce).to.be.true;
+      expect(monitor.trackJobComplete.calledOnce).to.be.true;
     });
 
     it('tracks cancellation for cancelled state', function () {

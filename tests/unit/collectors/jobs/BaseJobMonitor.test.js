@@ -25,6 +25,8 @@ describe('BaseJobMonitor', function () {
       appVersion: '1.0.0',
       buildHash: 'abc123'
     });
+    // Stub abstract method so _sendJobEvent can inject jobsPackage
+    monitor.getPackageName = () => 'test-package';
   });
 
   afterEach(function () {
@@ -136,7 +138,8 @@ describe('BaseJobMonitor', function () {
   describe('abstract methods', function () {
 
     it('getPackageName throws', function () {
-      expect(() => monitor.getPackageName()).to.throw('must be implemented');
+      const raw = new BaseJobMonitor({});
+      expect(() => raw.getPackageName()).to.throw('must be implemented');
     });
 
     it('isPackageAvailable throws', function () {

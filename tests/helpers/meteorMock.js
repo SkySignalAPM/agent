@@ -173,6 +173,9 @@ const Match = {
   Integer: { _isInteger: true },
   Where(fn) {
     return { _isWhere: true, _fn: fn };
+  },
+  ObjectIncluding(pattern) {
+    return { _isObjectIncluding: true, _pattern: pattern };
   }
 };
 
