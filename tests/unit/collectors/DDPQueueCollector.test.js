@@ -129,6 +129,28 @@ describe('DDPQueueCollector', function () {
       // Should not throw
       expect(() => wrappedUnblock()).to.not.throw();
     });
+
+    it('breaks deep synchronous unblock chains to avoid stack overflow', function (done) {
+      const deepCollector = new DDPQueueCollector({ enabled: true });
+      const session = createMockSession('deep-session');
+      const meteorUnblock = sinon.stub();
+
+      let chained = meteorUnblock;
+      for (let i = 0; i < 5000; i++) {
+        chained = deepCollector.wrapUnblock(
+          session,
+          { id: `deep-${i}`, msg: 'sub', name: 'assets.assetsInfo' },
+          chained
+        );
+      }
+
+      expect(() => chained()).to.not.throw();
+
+      setTimeout(() => {
+        expect(meteorUnblock.calledOnce).to.be.true;
+        done();
+      }, 20);
+    });
   });
 
   describe('_wrapSession', function () {
