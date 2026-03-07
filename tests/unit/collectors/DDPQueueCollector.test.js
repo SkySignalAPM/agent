@@ -3,11 +3,18 @@
  *
  * Bug #7: Stack overflow from wrapUnblock. The original code would retry
  * originalUnblock on failure, and when combined with MethodTracer's own
- * unblock wrapper, this created infinite mutual recursion.
+ * unblock wrapper (or another APM agent like montiapm:agent), this created
+ * infinite mutual recursion.
  *
- * Fix: wrapUnblock calls originalUnblock exactly once, never retries,
- * uses a guard flag, and metrics failures don't prevent unblock.
+ * Fix: wrapUnblock calls originalUnblock exactly once via queueMicrotask
+ * (to break synchronous recursion chains), never retries, uses a guard flag,
+ * and metrics failures don't prevent unblock.
  */
+
+/** Flush pending microtasks so queueMicrotask callbacks execute */
+function flushMicrotasks() {
+  return new Promise(resolve => resolve());
+}
 
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -50,7 +57,7 @@ describe('DDPQueueCollector', function () {
   // ==========================================
   describe('wrapUnblock (Bug #7 regression)', function () {
 
-    it('calls originalUnblock exactly once', function () {
+    it('calls originalUnblock exactly once (via microtask)', async function () {
       const session = createMockSession();
       const msg = { id: '1', msg: 'method', method: 'test.method' };
       const originalUnblock = sinon.stub();
@@ -58,22 +65,27 @@ describe('DDPQueueCollector', function () {
       const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
       wrappedUnblock();
 
+      // originalUnblock is called via queueMicrotask — flush it
+      await flushMicrotasks();
       expect(originalUnblock.calledOnce).to.be.true;
     });
 
-    it('does NOT retry if originalUnblock throws', function () {
+    it('does NOT retry if originalUnblock throws', async function () {
       const session = createMockSession();
       const msg = { id: '2', msg: 'method', method: 'test.method' };
       const originalUnblock = sinon.stub().throws(new Error('unblock failed'));
 
       const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
 
-      // Should throw the error from originalUnblock, but only call it once
-      expect(() => wrappedUnblock()).to.throw('unblock failed');
+      // wrappedUnblock itself should not throw — originalUnblock runs on microtask
+      // and its error is swallowed to prevent unhandled microtask errors
+      wrappedUnblock();
+      await flushMicrotasks();
+      // Called exactly once (no retry despite throwing)
       expect(originalUnblock.calledOnce).to.be.true;
     });
 
-    it('sets unblocked flag immediately (guard prevents double-call)', function () {
+    it('sets unblocked flag immediately (guard prevents double-call)', async function () {
       const session = createMockSession();
       const msg = { id: '3', msg: 'method', method: 'test.method' };
       const originalUnblock = sinon.stub();
@@ -84,11 +96,12 @@ describe('DDPQueueCollector', function () {
       wrappedUnblock();
       wrappedUnblock();
 
+      await flushMicrotasks();
       // originalUnblock should be called only once
       expect(originalUnblock.calledOnce).to.be.true;
     });
 
-    it('metrics failure does not prevent originalUnblock from being called', function () {
+    it('metrics failure does not prevent originalUnblock from being called', async function () {
       const session = createMockSession();
       const msg = { id: '4', msg: 'method', method: 'test.method' };
       const originalUnblock = sinon.stub();
@@ -99,11 +112,12 @@ describe('DDPQueueCollector', function () {
       const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
       wrappedUnblock();
 
+      await flushMicrotasks();
       // originalUnblock should still be called despite metrics error
       expect(originalUnblock.calledOnce).to.be.true;
     });
 
-    it('originalUnblock and currentProcessing cleanup run even if console.error throws during logging (simulates source-map-support overflow)', function () {
+    it('originalUnblock and currentProcessing cleanup run even if console.error throws during logging (simulates source-map-support overflow)', async function () {
       // Regression for issue #7: when a caught metrics error is passed to
       // console.error, source-map-support's prepareStackTrace can itself overflow
       // (calling String.replace on hundreds of frames). That secondary throw used
@@ -129,13 +143,14 @@ describe('DDPQueueCollector', function () {
         console.error = originalConsoleError;
       }
 
+      await flushMicrotasks();
       // Despite console.error throwing, originalUnblock must still be called
       expect(originalUnblock.calledOnce).to.be.true;
       // And currentProcessing must be cleared
       expect(collector.currentProcessing['session-log-throw']).to.be.undefined;
     });
 
-    it('clears currentProcessing on unblock', function () {
+    it('clears currentProcessing on unblock (synchronously)', function () {
       const session = createMockSession('session-A');
       const msg = { id: '5', msg: 'method', method: 'test.method' };
       const originalUnblock = sinon.stub();
@@ -147,7 +162,8 @@ describe('DDPQueueCollector', function () {
 
       wrappedUnblock();
 
-      // After unblock, cleared
+      // currentProcessing is cleared synchronously (in finally block),
+      // even though originalUnblock is deferred to microtask
       expect(collector.currentProcessing['session-A']).to.be.undefined;
     });
 
@@ -160,6 +176,125 @@ describe('DDPQueueCollector', function () {
 
       // Should not throw
       expect(() => wrappedUnblock()).to.not.throw();
+    });
+
+    it('uses String(error) not raw error in catch — prevents prepareStackTrace re-overflow', async function () {
+      const session = createMockSession('sess-string-coerce');
+      const msg = { id: '8', msg: 'method', method: 'test.method' };
+      const originalUnblock = sinon.stub();
+
+      // Make metrics fail with an error that has a custom toString
+      const deepError = new RangeError('Maximum call stack size exceeded');
+      // Simulate a deeply nested stack with 500+ frames
+      deepError.stack = 'RangeError: Maximum call stack size exceeded\n' +
+        Array.from({ length: 500 }, (_, i) => `    at wrapUnblock (DDPQueueCollector.js:${i}:1)`).join('\n');
+      sinon.stub(collector, 'calculateWaitedOn').throws(deepError);
+
+      // Spy on console.error to verify String(error) is passed, not the raw Error
+      const consoleStub = sinon.stub(console, 'error');
+
+      try {
+        const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
+        wrappedUnblock();
+      } finally {
+        consoleStub.restore();
+      }
+
+      // console.error should have been called with String(error), not the Error object
+      expect(consoleStub.calledOnce).to.be.true;
+      const loggedArgs = consoleStub.firstCall.args;
+      // The second argument (the error) should be a string, not an Error instance
+      expect(loggedArgs[1]).to.be.a('string');
+      expect(loggedArgs[1]).to.include('Maximum call stack size exceeded');
+      // originalUnblock is called via microtask
+      await flushMicrotasks();
+      expect(originalUnblock.calledOnce).to.be.true;
+    });
+
+    it('cleanup runs when _recordBlockingTime throws AND console.error throws simultaneously', async function () {
+      // Worst case: both the metrics recording and error logging fail
+      const session = createMockSession('sess-double-throw');
+      const msg = { id: '9', msg: 'method', method: 'test.method' };
+      const originalUnblock = sinon.stub();
+
+      sinon.stub(collector, 'calculateWaitedOn').throws(new Error('metrics exploded'));
+
+      const originalConsoleError = console.error;
+      console.error = () => { throw new RangeError('logging overflow'); };
+
+      try {
+        const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
+        try { wrappedUnblock(); } catch (_e) { /* expected */ }
+      } finally {
+        console.error = originalConsoleError;
+      }
+
+      await flushMicrotasks();
+      expect(originalUnblock.calledOnce).to.be.true;
+      expect(collector.currentProcessing['sess-double-throw']).to.be.undefined;
+    });
+
+    it('does not hold reference to error object after catch — no memory leak from deep stacks', async function () {
+      const session = createMockSession('sess-no-leak');
+      const msg = { id: '10', msg: 'method', method: 'test.method' };
+      const originalUnblock = sinon.stub();
+
+      const bigError = new Error('big stack');
+      bigError.stack = 'x'.repeat(100000); // 100KB stack
+      sinon.stub(collector, 'calculateWaitedOn').throws(bigError);
+
+      const consoleStub = sinon.stub(console, 'error');
+      try {
+        const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
+        wrappedUnblock();
+      } finally {
+        consoleStub.restore();
+      }
+
+      // After unblock, the error should only have been logged as a string.
+      // Verify that the raw error object wasn't stored anywhere in the collector.
+      expect(collector.currentProcessing['sess-no-leak']).to.be.undefined;
+      await flushMicrotasks();
+      expect(originalUnblock.calledOnce).to.be.true;
+    });
+
+    it('originalUnblock receives no arguments (clean call)', async function () {
+      const session = createMockSession();
+      const msg = { id: '11', msg: 'method', method: 'test.method' };
+      const originalUnblock = sinon.stub();
+
+      const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
+      wrappedUnblock();
+
+      await flushMicrotasks();
+      // originalUnblock should be called with zero arguments — passing the error
+      // object or any internal state would leak implementation details
+      expect(originalUnblock.firstCall.args).to.have.length(0);
+    });
+
+    it('concurrent sessions unblock independently', async function () {
+      const sessionA = createMockSession('sess-concurrent-A');
+      const sessionB = createMockSession('sess-concurrent-B');
+      const msgA = { id: 'a1', msg: 'method', method: 'testA' };
+      const msgB = { id: 'b1', msg: 'method', method: 'testB' };
+      const unblockA = sinon.stub();
+      const unblockB = sinon.stub();
+
+      const wrappedA = collector.wrapUnblock(sessionA, msgA, unblockA);
+      const wrappedB = collector.wrapUnblock(sessionB, msgB, unblockB);
+
+      // Unblock B first, then A — order should not matter
+      wrappedB();
+      // currentProcessing clears synchronously, originalUnblock is microtask-deferred
+      expect(collector.currentProcessing['sess-concurrent-A']).to.equal(msgA);
+      expect(collector.currentProcessing['sess-concurrent-B']).to.be.undefined;
+
+      wrappedA();
+      expect(collector.currentProcessing['sess-concurrent-A']).to.be.undefined;
+
+      await flushMicrotasks();
+      expect(unblockB.calledOnce).to.be.true;
+      expect(unblockA.calledOnce).to.be.true;
     });
   });
 

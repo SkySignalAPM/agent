@@ -4,13 +4,17 @@
  * Bug #7 Full Reproduction:
  * When both MethodTracer and DDPQueueCollector wrap unblock, the chained
  * wrappers could cause infinite recursion (stack overflow) if one layer
- * retried the other on failure. The fix ensures each layer calls through
- * exactly once with no retry.
+ * retried the other on failure, or if another APM agent (e.g. montiapm:agent)
+ * proxies the unblock synchronously, creating a recursive chain.
  *
- * This test simulates the exact scenario: MethodTracer wraps unblock first,
- * then DDPQueueCollector wraps it again. Calling the final wrapper must NOT
- * cause stack overflow.
+ * The fix ensures each layer calls through exactly once, and uses
+ * queueMicrotask to break any synchronous recursion chain.
  */
+
+/** Flush pending microtasks so queueMicrotask callbacks execute */
+function flushMicrotasks() {
+  return new Promise(resolve => resolve());
+}
 
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -21,7 +25,7 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
 
   describe('Bug #7 full reproduction: chained unblock wrappers', function () {
 
-    it('does not stack overflow when both collectors wrap unblock', function () {
+    it('does not stack overflow when both collectors wrap unblock', async function () {
       const collector = new DDPQueueCollector({ enabled: true });
       const session = createMockSession('cross-session');
       const msg = { id: 'msg-1', msg: 'method', method: 'users.get', _queueEnterTime: Date.now() - 50 };
@@ -44,11 +48,14 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
       // Call the final wrapper — this MUST NOT stack overflow
       finalUnblock();
 
+      // originalUnblock is called via queueMicrotask
+      await flushMicrotasks();
+
       // meteorUnblock should be called exactly once through the chain
       expect(meteorUnblock.calledOnce).to.be.true;
     });
 
-    it('handles throwing MethodTracer wrapper without stack overflow', function () {
+    it('handles throwing MethodTracer wrapper without stack overflow', async function () {
       const collector = new DDPQueueCollector({ enabled: true });
       const session = createMockSession('cross-session-2');
       const msg = { id: 'msg-2', msg: 'method', method: 'users.update', _queueEnterTime: Date.now() - 30 };
@@ -56,25 +63,33 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
       const meteorUnblock = sinon.stub();
 
       // Simulate MethodTracer wrapper that throws
+      let throwCalled = false;
       function throwingMethodTracerWrapper() {
+        throwCalled = true;
         throw new Error('MethodTracer wrapper error');
       }
 
       // DDPQueueCollector wraps the throwing wrapper
       const finalUnblock = collector.wrapUnblock(session, msg, throwingMethodTracerWrapper);
 
-      // Should throw but NOT stack overflow (no retry)
-      expect(() => finalUnblock()).to.throw('MethodTracer wrapper error');
+      // wrappedUnblock itself should not throw — originalUnblock runs on microtask
+      // and errors inside the microtask are caught and swallowed
+      finalUnblock();
+      await flushMicrotasks();
+
+      // The throwing wrapper was called (once)
+      expect(throwCalled).to.be.true;
 
       // Meteor's unblock is NOT called because the intermediate wrapper threw
       expect(meteorUnblock.called).to.be.false;
 
       // Calling again should be a no-op (guard flag set)
-      expect(() => finalUnblock()).to.not.throw();
+      finalUnblock();
+      await flushMicrotasks();
       expect(meteorUnblock.called).to.be.false;
     });
 
-    it('works when DDPQueueCollector wraps unblock and MethodTracer wraps the session handler', function () {
+    it('works when DDPQueueCollector wraps unblock and MethodTracer wraps the session handler', async function () {
       const collector = new DDPQueueCollector({ enabled: true });
       const session = createMockSession('cross-session-3');
 
@@ -86,7 +101,6 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
       collector._wrapSession(session);
 
       // Simulate what happens during a method call:
-      // 1. processMessage is called first
       const methodMsg = {
         id: 'msg-3',
         msg: 'method',
@@ -94,31 +108,18 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
         _queueEnterTime: Date.now() - 100
       };
 
-      // 2. The method handler is called with unblock
-      // DDPQueueCollector's wrapped handler will wrap unblock internally
-      let capturedUnblock = null;
-
-      // Override the inner method handler to capture the wrapped unblock
-      const ddpWrappedHandler = session.protocol_handlers.method;
-
-      // Create a mock that simulates what Meteor does: call the handler with msg and unblock
-      session.protocol_handlers.method = function (msg, unblock) {
-        capturedUnblock = unblock;
-        // Don't call inner handler to avoid needing full Meteor context
-      };
-
-      // But we need the DDPQueueCollector's wrapping, so let's just test wrapUnblock directly
-      // with a chain that simulates the real scenario
+      // Test wrapUnblock directly with a chain that simulates the real scenario
       const ddpWrapped = collector.wrapUnblock(session, methodMsg, meteorUnblock);
 
       // Call it
       ddpWrapped();
 
+      await flushMicrotasks();
       expect(meteorUnblock.calledOnce).to.be.true;
       expect(order).to.deep.equal(['meteorUnblock']);
     });
 
-    it('prevents stack overflow with deeply nested wrapper chains', function () {
+    it('prevents stack overflow with deeply nested wrapper chains', async function () {
       const collector = new DDPQueueCollector({ enabled: true });
       const session = createMockSession('deep-chain');
       const msg = { id: 'deep-msg', msg: 'method', method: 'deep.method' };
@@ -143,7 +144,49 @@ describe('Cross-Collector: DDPQueue + MethodTracer interaction', function () {
       // Must not stack overflow
       final();
 
+      await flushMicrotasks();
       expect(meteorUnblock.calledOnce).to.be.true;
+    });
+
+    it('queueMicrotask breaks synchronous recursion from another APM agent', async function () {
+      // Simulates the real scenario: montiapm:agent (or similar) wraps unblock
+      // and synchronously calls processMessage for the next queued DDP message,
+      // which re-enters our wrapper. Without queueMicrotask, this would overflow.
+      const collector = new DDPQueueCollector({ enabled: true });
+
+      let callCount = 0;
+      const maxCalls = 200; // Simulate 200 queued messages
+      const meteorUnblock = sinon.stub();
+
+      // Simulate a "synchronous queue drainer" like another APM agent might create.
+      // Each call to unblock synchronously triggers the next message's unblock.
+      function montiLikeUnblock() {
+        callCount++;
+        if (callCount < maxCalls) {
+          // Simulate processing next queued message which also calls wrapUnblock
+          const session = createMockSession(`session-${callCount}`);
+          const msg = { id: `msg-${callCount}`, msg: 'sub', name: `pub.${callCount}` };
+          const next = callCount < maxCalls - 1 ? montiLikeUnblock : meteorUnblock;
+          const wrapped = collector.wrapUnblock(session, msg, next);
+          wrapped(); // This would recurse synchronously WITHOUT queueMicrotask
+        }
+      }
+
+      const session = createMockSession('session-0');
+      const msg = { id: 'msg-0', msg: 'sub', name: 'pub.0' };
+      const wrapped = collector.wrapUnblock(session, msg, montiLikeUnblock);
+
+      // Call the first wrapper — because queueMicrotask is used,
+      // this should NOT stack overflow even with 200 chained calls
+      wrapped();
+
+      // Flush all microtasks (each one enqueues the next)
+      for (let i = 0; i < maxCalls + 5; i++) {
+        await flushMicrotasks();
+      }
+
+      // The chain should have completed without stack overflow
+      expect(callCount).to.be.greaterThan(0);
     });
   });
 

@@ -854,6 +854,15 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.24 (DDP Queue Stack Overflow Fix)
+
+- **Fix secondary stack overflow in `wrapUnblock`** - When `_recordBlockingTime()` threw an error with a very deep stack trace (e.g. from mutual-recursion across wrapper layers), `console.error(error)` triggered `source-map-support`'s `prepareStackTrace` which re-overflowed, causing a secondary `RangeError`. All `console.error` calls in `DDPQueueCollector` now use `String(error)` to serialize the error message without triggering stack trace reprocessing. See [#12](https://github.com/SkySignalAPM/agent/pull/12).
+- **Move `originalUnblock()` call into `finally` block** - The cleanup logic (`delete self.currentProcessing[session.id]` and `originalUnblock()`) was previously in the `try` block after the metrics recording. If `console.error` itself failed in the `catch` block, these cleanup steps were skipped, permanently stalling the DDP queue for that session. Both are now in a `finally` block to guarantee execution regardless of error handling failures.
+- **New test: deep-stack error handling** - Added unit test verifying that `wrapUnblock` correctly invokes the original unblock function even when the metrics callback throws an error with a deeply nested stack trace.
+- **Fix root cause: async `originalUnblock()` via `queueMicrotask`** - The primary stack overflow ([#7](https://github.com/SkySignalAPM/agent/issues/7)) was caused by `originalUnblock()` being called synchronously in the `finally` block. When another APM agent (e.g. `montiapm:agent`) also wraps the DDP session's unblock function, the synchronous call chain creates infinite recursion. `originalUnblock()` is now called via `queueMicrotask()` to break the synchronous chain. This is safe because Meteor's own `runHandlers()` independently calls its native unblock after the protocol handler returns — our call is purely for instrumentation.
+- **Conflicting APM agent detection** - On startup, `DDPQueueCollector` now checks for `montiapm:agent` and `mdg:meteor-apm-agent` and logs a warning if detected. Running multiple APM agents that wrap DDP internals simultaneously is not recommended.
+- **New test: synchronous recursion prevention** - Added cross-collector test simulating 200 chained unblock calls from another APM agent, verifying that `queueMicrotask` breaks the recursion without stack overflow.
+
 ### v1.0.23 (BullMQ Support & Job Package Tracking)
 
 - **BullMQ queue monitoring** - The agent now supports [BullMQ](https://docs.bullmq.io/) as a second job queue backend alongside `msavin:sjobs`. `BullMQMonitor` discovers queues automatically by scanning Redis for `bull:*:meta` key patterns and attaches `QueueEvents` listeners for real-time job lifecycle tracking (active, completed, failed, stalled, progress). Supports manual queue configuration via `bullmqQueues` for non-standard Redis key prefixes. Includes an LRU job detail cache (`jobCacheMaxSize: 2000`, `jobCacheTTL: 120000`) to fetch full job data on failure without hitting Redis on every event.
