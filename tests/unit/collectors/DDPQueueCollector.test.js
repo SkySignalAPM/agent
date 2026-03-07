@@ -103,6 +103,38 @@ describe('DDPQueueCollector', function () {
       expect(originalUnblock.calledOnce).to.be.true;
     });
 
+    it('originalUnblock and currentProcessing cleanup run even if console.error throws during logging (simulates source-map-support overflow)', function () {
+      // Regression for issue #7: when a caught metrics error is passed to
+      // console.error, source-map-support's prepareStackTrace can itself overflow
+      // (calling String.replace on hundreds of frames). That secondary throw used
+      // to propagate out of the catch block, skipping originalUnblock() and
+      // leaving the DDP queue stuck. The finally block ensures cleanup always runs.
+      const session = createMockSession('session-log-throw');
+      const msg = { id: '7', msg: 'method', method: 'test.method' };
+      const originalUnblock = sinon.stub();
+
+      // Make metrics fail to enter the catch block
+      sinon.stub(collector, 'calculateWaitedOn').throws(new Error('simulated metrics error'));
+
+      // Make console.error throw to simulate source-map-support overflow
+      const originalConsoleError = console.error;
+      console.error = sinon.stub().throws(new Error('simulated console.error overflow'));
+
+      try {
+        const wrappedUnblock = collector.wrapUnblock(session, msg, originalUnblock);
+        // The throw from console.error propagates out; the caller may see it.
+        // The important invariant is that originalUnblock is still invoked.
+        try { wrappedUnblock(); } catch (_e) { /* expected */ }
+      } finally {
+        console.error = originalConsoleError;
+      }
+
+      // Despite console.error throwing, originalUnblock must still be called
+      expect(originalUnblock.calledOnce).to.be.true;
+      // And currentProcessing must be cleared
+      expect(collector.currentProcessing['session-log-throw']).to.be.undefined;
+    });
+
     it('clears currentProcessing on unblock', function () {
       const session = createMockSession('session-A');
       const msg = { id: '5', msg: 'method', method: 'test.method' };
