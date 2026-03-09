@@ -42,38 +42,10 @@ Sign up at [SkySignal](https://skysignal.app) and create a new site to get your 
 
 ### 2. Configure the Agent
 
-In your Meteor server startup code (e.g., `server/main.js`):
+Add the package to your Meteor application:
 
-```javascript
-import { Meteor } from 'meteor/meteor';
-import { SkySignalAgent } from 'meteor/skysignal:agent';
-
-Meteor.startup(() => {
-  // Configure the agent
-  SkySignalAgent.configure({
-    apiKey: process.env.SKYSIGNAL_API_KEY || 'your-api-key-here',
-    enabled: true,
-    host: 'my-app-server-1', // Optional: defaults to hostname
-    appVersion: '1.2.3', // Optional: auto-detected from package.json
-
-    // Optional: Customize collection intervals
-    systemMetricsInterval: 60000, // 1 minute (default)
-    flushInterval: 10000, // 10 seconds (default)
-    batchSize: 50, // Max items per batch (default)
-
-    // Optional: Sampling for high-traffic apps
-    traceSampleRate: 1.0, // 100% of traces (reduce for high volume)
-
-    // Optional: Feature toggles
-    collectTraces: true,
-    collectMongoPool: true,
-    collectDDPConnections: true,
-    collectJobs: true
-  });
-
-  // Start monitoring
-  SkySignalAgent.start();
-});
+```bash
+meteor add skysignal:agent
 ```
 
 ### 3. Add to Settings File
@@ -86,33 +58,14 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
   "skysignal": {
     "apiKey": "sk_your_api_key_here",
     "enabled": true,
-    "host": "production-server-1",
     "appVersion": "1.2.3",
-    "traceSampleRate": 0.5,
-    "collectTraces": true,
-    "collectMongoPool": true,
-    "collectDDPConnections": true,
-    "collectJobs": true,
-    "collectLogs": true,
-    "logLevels": ["warn", "error", "fatal"],
-    "logSampleRate": 0.5,
-    "captureIndexUsage": true,
-    "indexUsageSampleRate": 0.05,
-    "collectDnsTimings": true,
-    "collectOutboundHttp": true,
-    "collectCpuProfiles": true,
-    "cpuProfileThreshold": 80,
-    "collectDeprecatedApis": true,
-    "collectPublications": true,
-    "collectEnvironment": true,
-    "collectVulnerabilities": true
   },
   "public": {
     "skysignal": {
       "publicKey": "pk_your_public_key_here",
       "rum": {
         "enabled": true,
-        "sampleRate": 0.5
+        "sampleRate": 1.0,
       },
       "errorTracking": {
         "enabled": true,
@@ -124,23 +77,6 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
 ```
 
 The agent auto-starts when it finds valid configuration in `Meteor.settings.skysignal`.
-
-**Manual initialization (optional):**
-```javascript
-import { SkySignalAgent } from 'meteor/skysignal:agent';
-
-Meteor.startup(() => {
-  // Only needed if not using settings auto-initialization
-  const config = Meteor.settings.skysignal;
-
-  if (config && config.apiKey) {
-    SkySignalAgent.configure(config);
-    SkySignalAgent.start();
-  } else {
-    console.warn('⚠️ SkySignal not configured - monitoring disabled');
-  }
-});
-```
 
 ## Configuration Options
 
