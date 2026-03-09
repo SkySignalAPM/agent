@@ -854,6 +854,13 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.25 (Stack Overflow Root Cause Fix)
+
+- **Fix shared `protocol_handlers` wrapper chain buildup (ROOT CAUSE)** - In Meteor, `session.protocol_handlers` is a shared object on the Session prototype — all DDP sessions reference the same object. `_hijackMethodHandler` and `_hijackSubHandler` captured `session.protocol_handlers.method` and replaced it with a wrapper, but because the object is shared, each new session's wrap captured the PREVIOUS session's wrapper, building an N-deep call chain. After ~200 concurrent connections, calling `protocol_handlers.method` would recurse through hundreds of chained wrappers and overflow V8's stack. The fix adds a `_skySignalDDPQueueWrapped` flag on the wrapper function itself, ensuring the handler is wrapped exactly once globally regardless of how many sessions connect. (fixes [#7](https://github.com/SkySignalAPM/agent/issues/7))
+- **Auto-disable DDPQueueCollector when another APM agent is detected** - When `montiapm:agent` or `mdg:meteor-apm-agent` is installed alongside `skysignal:agent`, `DDPQueueCollector.start()` now automatically disables itself instead of merely logging a warning. Both agents wrap the same DDP session internals, and the compounded wrapper depth compounds the stack overflow risk. Users can force-enable via `{ forceEnable: true }` if they accept the risk.
+- **Skip MethodTracer unblock wrapping when another APM agent is detected** - `MethodTracer._wrapMethod()` now skips wrapping `methodInvocation.unblock` when a conflicting APM agent is present. Both agents wrapping unblock adds ~3-5 extra frames per method call. Unblock timing analysis is unavailable in this mode; all other MethodTracer features remain fully functional.
+- **New tests: shared prototype regression** - Added tests simulating 50 sessions sharing the same `protocol_handlers` object, verifying the handler is wrapped exactly once and does not build a deep chain.
+
 ### v1.0.24 (DDP Queue Stack Overflow Fix)
 
 - **Fix secondary stack overflow in `wrapUnblock`** - When `_recordBlockingTime()` threw an error with a very deep stack trace (e.g. from mutual-recursion across wrapper layers), `console.error(error)` triggered `source-map-support`'s `prepareStackTrace` which re-overflowed, causing a secondary `RangeError`. All `console.error` calls in `DDPQueueCollector` now use `String(error)` to serialize the error message without triggering stack trace reprocessing. See [#12](https://github.com/SkySignalAPM/agent/pull/12).

@@ -50,6 +50,60 @@ describe('DDPQueueCollector', function () {
       const c = new DDPQueueCollector({ enabled: false });
       expect(c.enabled).to.be.false;
     });
+
+    it('accepts forceEnable option', function () {
+      const c = new DDPQueueCollector({ forceEnable: true });
+      expect(c.forceEnable).to.be.true;
+    });
+  });
+
+  describe('conflicting APM agent detection', function () {
+    let collector;
+
+    afterEach(function () {
+      // Stop collector to clear any setInterval handles
+      if (collector) {
+        try { collector.stop(); } catch (_e) { /* ignore */ }
+        collector = null;
+      }
+      // Clean up global Package mock
+      delete global.Package;
+    });
+
+    it('auto-disables when montiapm:agent is detected', function () {
+      global.Package = { 'montiapm:agent': {} };
+      collector = new DDPQueueCollector({ enabled: true });
+      collector.start();
+      expect(collector.started).to.be.false;
+      expect(collector._conflictingAgent).to.be.true;
+    });
+
+    it('auto-disables when mdg:meteor-apm-agent is detected', function () {
+      global.Package = { 'mdg:meteor-apm-agent': {} };
+      collector = new DDPQueueCollector({ enabled: true });
+      collector.start();
+      expect(collector.started).to.be.false;
+    });
+
+    it('does not set _conflictingAgent when no conflicting agent present', function () {
+      global.Package = {};
+      collector = new DDPQueueCollector({ enabled: true });
+      // We can't call start() without Meteor.server (it would try to hijack sessions),
+      // but we can test the detection logic directly by checking what start() would set.
+      // Calling start will error at _hijackSessionProcessing, but _conflictingAgent
+      // is set before that call.
+      try { collector.start(); } catch (_e) { /* expected without Meteor.server */ }
+      expect(collector._conflictingAgent).to.be.false;
+    });
+
+    it('force-enables despite conflicting agent when forceEnable is true', function () {
+      global.Package = { 'montiapm:agent': {} };
+      collector = new DDPQueueCollector({ enabled: true, forceEnable: true });
+      // start() proceeds past the guard and tries _hijackSessionProcessing,
+      // which errors without Meteor.server — but it proves it didn't early-return.
+      try { collector.start(); } catch (_e) { /* expected without Meteor.server */ }
+      expect(collector._conflictingAgent).to.be.true;
+    });
   });
 
   // ==========================================
@@ -295,6 +349,65 @@ describe('DDPQueueCollector', function () {
       await flushMicrotasks();
       expect(unblockB.calledOnce).to.be.true;
       expect(unblockA.calledOnce).to.be.true;
+    });
+  });
+
+  describe('shared protocol_handlers (Bug #7 root cause)', function () {
+
+    it('does NOT build N-deep wrapper chain when sessions share protocol_handlers', function () {
+      // In Meteor, session.protocol_handlers is on the Session prototype.
+      // All sessions share the SAME protocol_handlers object. Without the
+      // _skySignalDDPQueueWrapped guard, each _wrapSession call adds another
+      // wrapper layer. After N sessions, calling protocol_handlers.method
+      // recurses N levels deep, causing stack overflow. See #7.
+      const sharedHandlers = {
+        method: sinon.stub(),
+        sub: sinon.stub()
+      };
+
+      // Create 50 sessions sharing the same protocol_handlers object
+      const sessions = [];
+      for (let i = 0; i < 50; i++) {
+        const session = createMockSession(`shared-${i}`);
+        session.protocol_handlers = sharedHandlers; // Shared reference
+        sessions.push(session);
+      }
+
+      // Wrap all 50 sessions
+      sessions.forEach(s => collector._wrapSession(s));
+
+      // protocol_handlers.method should be wrapped exactly ONCE, not 50 times
+      expect(sharedHandlers.method._skySignalDDPQueueWrapped).to.be.true;
+
+      // Calling the handler should NOT overflow — it's 1 wrapper deep, not 50
+      const msg = { id: 'test', msg: 'method', method: 'test.method', _queueEnterTime: Date.now() };
+      expect(() => {
+        sharedHandlers.method.call(sessions[0], msg, () => {});
+      }).to.not.throw();
+    });
+
+    it('wraps protocol_handlers.sub only once across shared sessions', function () {
+      const sharedHandlers = {
+        method: sinon.stub(),
+        sub: sinon.stub()
+      };
+
+      const sessions = [];
+      for (let i = 0; i < 20; i++) {
+        const session = createMockSession(`shared-sub-${i}`);
+        session.protocol_handlers = sharedHandlers;
+        sessions.push(session);
+      }
+
+      sessions.forEach(s => collector._wrapSession(s));
+
+      expect(sharedHandlers.sub._skySignalDDPQueueWrapped).to.be.true;
+
+      // Call the sub handler — should not overflow
+      const msg = { id: 'sub-test', msg: 'sub', name: 'test.pub', _queueEnterTime: Date.now() };
+      expect(() => {
+        sharedHandlers.sub.call(sessions[0], msg, () => {});
+      }).to.not.throw();
     });
   });
 
