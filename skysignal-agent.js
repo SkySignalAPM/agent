@@ -571,6 +571,7 @@ class SkySignalAgentClass {
 					appVersion: this.config.appVersion,
 					buildHash: this.config.buildHash,
 					interval: this.config.liveQueriesInterval,
+					maxObservers: this.config.liveQueriesMaxObservers,
 					debug: this.config.debug
 				};
 

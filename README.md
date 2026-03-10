@@ -216,6 +216,15 @@ The agent auto-starts when it finds valid configuration in `Meteor.settings.skys
 | `logCaptureConsole` | Boolean | `true` | Intercept `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug` |
 | `logCaptureMeteorLog` | Boolean | `true` | Intercept Meteor `Log.info`, `Log.warn`, `Log.error`, `Log.debug` |
 
+### Live Query Monitoring
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `collectLiveQueries` | Boolean | `true` | Enable reactive query observer monitoring (change streams, oplog, polling) |
+| `liveQueriesInterval` | Number | `60000` | Reporting interval in ms (60 seconds) |
+| `liveQueriesMaxObservers` | Number | `5000` | Max tracked observers before eviction (min: 500). Increase for high-traffic apps |
+| `liveQueriesPerformanceThresholds` | Object | `null` | Optional: custom performance thresholds per observer type |
+
 ### Client-Side Error Tracking
 
 Client-side error tracking is configured in `Meteor.settings.public.skysignal.errorTracking` and auto-initializes alongside RUM.
@@ -789,6 +798,10 @@ Main agent singleton instance.
 - **Issues**: [https://github.com/skysignalapm/agent/issues](https://github.com/skysignalapm/agent/issues)
 
 ## Changelog
+
+### v1.0.26 (Configurable Observer Limit)
+
+- **Expose `liveQueriesMaxObservers` as a public configuration option** - The `LiveQueriesCollector` max observer limit (default: 5000) was hardcoded and not wired through the public config system. High-traffic applications could hit the limit during peak traffic, causing frequent eviction warnings. Users can now configure this via `SkySignalAgent.configure({ liveQueriesMaxObservers: 15000 })` or Meteor settings. Minimum value is 500 to prevent eviction loops.
 
 ### v1.0.25 (Stack Overflow Root Cause Fix)
 
