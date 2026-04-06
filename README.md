@@ -801,7 +801,7 @@ Main agent singleton instance.
 
 ### v1.0.27 (Subscription Write Reduction)
 
-- **Delta-based subscription reporting** - `DDPCollector._sendSubscriptionUpdates()` previously sent the entire subscription Map as a full snapshot every 30-second cycle. For apps with many stable `ready` subscriptions, this generated thousands of redundant server-side upserts per minute, each touching 8+ indexes. The collector now computes a lightweight hash of each subscription's mutable fields (`status`, `documentsAdded`, `documentsChanged`, `documentsRemoved`, `dataTransferred`, `readyAt`, `stoppedAt`, `errorMessage`) and only includes subscriptions whose hash differs from the last reported value. A full snapshot is forced every 10 cycles (~5 minutes at the default 30s interval) so the server self-heals if a delta HTTP request is lost.
+- **Delta-based subscription reporting** - `DDPCollector._sendSubscriptionUpdates()` previously sent the entire subscription Map as a full snapshot every 30-second cycle. For apps with many stable `ready` subscriptions, this generated thousands of redundant updates per minute. The collector now computes a lightweight hash of each subscription's mutable fields (`status`, `documentsAdded`, `documentsChanged`, `documentsRemoved`, `dataTransferred`, `readyAt`, `stoppedAt`, `errorMessage`) and only includes subscriptions whose hash differs from the last reported value. A full snapshot is forced every 10 cycles (~5 minutes at the default 30s interval) so the server self-heals if a delta HTTP request is lost.
 
 ### v1.0.26 (Configurable Observer Limit)
 
