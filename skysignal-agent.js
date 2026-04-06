@@ -1440,14 +1440,18 @@ class SkySignalAgentClass {
 const agent = new SkySignalAgentClass();
 
 if (Meteor.isServer) {
-	const config = Meteor.settings?.skysignal || Meteor.settings?.SkySignal;
+	const settingsConfig = Meteor.settings?.skysignal || Meteor.settings?.SkySignal || {};
 
-	if (config && config.apiKey) {
+	// Agent can start from Meteor.settings, env vars, or both.
+	// Settings take priority; env vars are resolved inside mergeConfig().
+	const hasApiKey = settingsConfig.apiKey || process.env.SKYSIGNAL_API_KEY;
+
+	if (hasApiKey) {
 		try {
-			agent.configure(config);
+			agent.configure(settingsConfig);
 			agent.start();
 			// Single startup message - only shows in production to confirm agent is running
-			if (!config.debug) {
+			if (!agent.config.debug) {
 				console.log("[SkySignal] Agent started - host:", agent.config.host);
 			}
 

@@ -1,5 +1,6 @@
 import { expect } from 'chai';
 import { DEFAULT_CONFIG, validateConfig, mergeConfig } from '../../../lib/config.js';
+import { resolveEnvConfig } from '../../../lib/env.js';
 
 describe('config', function () {
 
@@ -39,6 +40,10 @@ describe('config', function () {
 
     it('throws on missing apiKey', function () {
       expect(() => validateConfig({})).to.throw(/Missing key 'apiKey'/);
+    });
+
+    it('accepts null apiKey (validated at start-time instead)', function () {
+      expect(() => validateConfig({ apiKey: null })).to.not.throw();
     });
 
     it('throws when traceSampleRate < 0', function () {
@@ -135,8 +140,65 @@ describe('config', function () {
       }
     });
 
-    it('throws on invalid input (delegates to validateConfig)', function () {
-      expect(() => mergeConfig({})).to.throw(/Missing key 'apiKey'/);
+    it('allows merging without apiKey (null from defaults)', function () {
+      const config = mergeConfig({});
+      expect(config.apiKey).to.be.null;
+    });
+
+    it('throws on invalid values in merged config', function () {
+      expect(() => mergeConfig({ apiKey: 'sk_test_123', traceSampleRate: 5.0 }))
+        .to.throw('traceSampleRate must be between 0 and 1');
+    });
+  });
+
+  describe('env var integration', function () {
+
+    const setVars = [];
+
+    function setEnv(key, value) {
+      setVars.push(key);
+      process.env[key] = value;
+    }
+
+    afterEach(function () {
+      for (const key of setVars) {
+        delete process.env[key];
+      }
+      setVars.length = 0;
+    });
+
+    it('mergeConfig picks up apiKey from env var', function () {
+      setEnv('SKYSIGNAL_API_KEY', 'sk_env_123');
+      const config = mergeConfig({});
+      expect(config.apiKey).to.equal('sk_env_123');
+    });
+
+    it('Meteor.settings apiKey overrides env var apiKey', function () {
+      setEnv('SKYSIGNAL_API_KEY', 'sk_env_123');
+      const config = mergeConfig({ apiKey: 'sk_settings_456' });
+      expect(config.apiKey).to.equal('sk_settings_456');
+    });
+
+    it('env var overrides DEFAULT_CONFIG', function () {
+      setEnv('SKYSIGNAL_TRACE_SAMPLE_RATE', '0.1');
+      const config = mergeConfig({ apiKey: 'sk_test_123' });
+      expect(config.traceSampleRate).to.equal(0.1);
+    });
+
+    it('user config overrides env var', function () {
+      setEnv('SKYSIGNAL_TRACE_SAMPLE_RATE', '0.1');
+      const config = mergeConfig({ apiKey: 'sk_test_123', traceSampleRate: 0.5 });
+      expect(config.traceSampleRate).to.equal(0.5);
+    });
+
+    it('SKYSIGNAL_ENDPOINT env var still works after inline removal', function () {
+      setEnv('SKYSIGNAL_ENDPOINT', 'https://custom.example.com');
+      const config = mergeConfig({ apiKey: 'sk_test_123' });
+      expect(config.endpoint).to.equal('https://custom.example.com');
+    });
+
+    it('DEFAULT_CONFIG.endpoint is the hardcoded URL without env var', function () {
+      expect(DEFAULT_CONFIG.endpoint).to.equal('https://dash.skysignal.app');
     });
   });
 });

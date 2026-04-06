@@ -48,9 +48,11 @@ Add the package to your Meteor application:
 meteor add skysignal:agent
 ```
 
-### 3. Add to Settings File
+### 3. Configure the Agent
 
-For production, use Meteor settings. The agent **auto-initializes** from settings if configured:
+The agent can be configured via **Meteor settings**, **environment variables**, or both. When both are used, Meteor settings take priority over environment variables.
+
+#### Option A: Meteor Settings File
 
 **settings-production.json:**
 ```json
@@ -76,9 +78,72 @@ For production, use Meteor settings. The agent **auto-initializes** from setting
 }
 ```
 
-The agent auto-starts when it finds valid configuration in `Meteor.settings.skysignal`.
+#### Option B: Environment Variables
+
+```bash
+SKYSIGNAL_API_KEY=sk_your_api_key_here meteor run
+```
+
+#### Option C: Both (Settings override env vars)
+
+```bash
+# API key from env, tuning from settings
+SKYSIGNAL_API_KEY=sk_your_api_key_here meteor run --settings settings.json
+```
+
+The agent auto-starts when it finds a valid `apiKey` in either `Meteor.settings.skysignal` or the `SKYSIGNAL_API_KEY` environment variable.
 
 ## Configuration Options
+
+All configuration options can be set via `Meteor.settings.skysignal` or environment variables. When both are present, the priority order is:
+
+1. **Meteor.settings** (highest priority)
+2. **Environment variables** (fallback)
+3. **Default values** (lowest priority)
+
+### Environment Variables
+
+Every server-side configuration option has a corresponding environment variable. Boolean values accept `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive). Invalid values are warned and skipped.
+
+| Environment Variable | Config Key | Type |
+|---------------------|------------|------|
+| `SKYSIGNAL_API_KEY` | `apiKey` | String |
+| `SKYSIGNAL_ENDPOINT` | `endpoint` | String |
+| `SKYSIGNAL_ENABLED` | `enabled` | Boolean |
+| `SKYSIGNAL_DEBUG` | `debug` | Boolean |
+| `SKYSIGNAL_HOST` | `host` | String |
+| `SKYSIGNAL_APP_VERSION` | `appVersion` | String |
+| `SKYSIGNAL_BATCH_SIZE` | `batchSize` | Integer |
+| `SKYSIGNAL_BATCH_SIZE_BYTES` | `batchSizeBytes` | Integer |
+| `SKYSIGNAL_FLUSH_INTERVAL` | `flushInterval` | Integer |
+| `SKYSIGNAL_TRACE_SAMPLE_RATE` | `traceSampleRate` | Float |
+| `SKYSIGNAL_RUM_SAMPLE_RATE` | `rumSampleRate` | Float |
+| `SKYSIGNAL_INDEX_USAGE_SAMPLE_RATE` | `indexUsageSampleRate` | Float |
+| `SKYSIGNAL_LOG_SAMPLE_RATE` | `logSampleRate` | Float |
+| `SKYSIGNAL_COLLECT_SYSTEM_METRICS` | `collectSystemMetrics` | Boolean |
+| `SKYSIGNAL_COLLECT_TRACES` | `collectTraces` | Boolean |
+| `SKYSIGNAL_COLLECT_ERRORS` | `collectErrors` | Boolean |
+| `SKYSIGNAL_COLLECT_HTTP` | `collectHttpRequests` | Boolean |
+| `SKYSIGNAL_COLLECT_MONGO_POOL` | `collectMongoPool` | Boolean |
+| `SKYSIGNAL_COLLECT_COLLECTION_STATS` | `collectCollectionStats` | Boolean |
+| `SKYSIGNAL_COLLECT_DDP` | `collectDDPConnections` | Boolean |
+| `SKYSIGNAL_COLLECT_RUM` | `collectRUM` | Boolean |
+| `SKYSIGNAL_COLLECT_JOBS` | `collectJobs` | Boolean |
+| `SKYSIGNAL_COLLECT_LOGS` | `collectLogs` | Boolean |
+| `SKYSIGNAL_COLLECT_DNS_TIMINGS` | `collectDnsTimings` | Boolean |
+| `SKYSIGNAL_COLLECT_OUTBOUND_HTTP` | `collectOutboundHttp` | Boolean |
+| `SKYSIGNAL_COLLECT_CPU_PROFILES` | `collectCpuProfiles` | Boolean |
+| `SKYSIGNAL_COLLECT_LIVE_QUERIES` | `collectLiveQueries` | Boolean |
+| `SKYSIGNAL_COLLECT_PUBLICATIONS` | `collectPublications` | Boolean |
+| `SKYSIGNAL_COLLECT_ENVIRONMENT` | `collectEnvironment` | Boolean |
+| `SKYSIGNAL_COLLECT_VULNERABILITIES` | `collectVulnerabilities` | Boolean |
+| `SKYSIGNAL_COLLECT_DEPRECATED_APIS` | `collectDeprecatedApis` | Boolean |
+| `SKYSIGNAL_LOG_LEVELS` | `logLevels` | Comma-separated |
+| `SKYSIGNAL_LOG_MAX_MESSAGE_LENGTH` | `logMaxMessageLength` | Integer |
+| `SKYSIGNAL_LOG_CAPTURE_CONSOLE` | `logCaptureConsole` | Boolean |
+| `SKYSIGNAL_LOG_CAPTURE_METEOR_LOG` | `logCaptureMeteorLog` | Boolean |
+
+All collection interval and performance options also have corresponding `SKYSIGNAL_*` environment variables. See `lib/env.js` for the complete mapping.
 
 ### API Configuration
 
@@ -798,6 +863,14 @@ Main agent singleton instance.
 - **Issues**: [https://github.com/skysignalapm/agent/issues](https://github.com/skysignalapm/agent/issues)
 
 ## Changelog
+
+### v1.0.28 (Environment Variable Configuration)
+
+- **Environment variable fallback for all config options** - The agent can now be configured entirely via environment variables, with no `Meteor.settings` required. Set `SKYSIGNAL_API_KEY` and the agent auto-starts. Every server-side config option has a corresponding `SKYSIGNAL_*` env var (e.g., `SKYSIGNAL_DEBUG`, `SKYSIGNAL_TRACE_SAMPLE_RATE`, `SKYSIGNAL_COLLECT_TRACES`). Priority order: Meteor.settings (highest) > env vars > defaults. This is useful for Docker/CI deployments where injecting env vars is easier than mounting settings files.
+- **Declarative env var registry** - New `lib/env.js` module with a declarative `ENV_MAP` array mapping 53 environment variables to config keys with automatic type coercion (string, boolean, integer, float, comma-separated arrays). Adding support for a new env var requires only one line in the map.
+- **Robust boolean coercion** - Boolean env vars accept `true`/`1`/`yes` and `false`/`0`/`no` (case-insensitive). Unrecognized values are warned and skipped — the agent never crashes the host application due to a misconfigured env var.
+- **Removed inline `SKYSIGNAL_ENDPOINT` from `DEFAULT_CONFIG`** - The existing `process.env.SKYSIGNAL_ENDPOINT || "..."` pattern in `DEFAULT_CONFIG` is replaced by the new env var layer. Backwards compatible — existing deployments using `SKYSIGNAL_ENDPOINT` continue to work identically.
+- **`validateConfig` now validates the merged config** - `mergeConfig()` now merges all three layers (defaults, env, settings) before validation, allowing `apiKey` to come from any source. The `apiKey` requirement is enforced at `start()` time.
 
 ### v1.0.27 (Subscription Write Reduction)
 
