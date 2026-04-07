@@ -864,6 +864,10 @@ Main agent singleton instance.
 
 ## Changelog
 
+### v1.0.29 (Host Config Fix)
+
+- **Fix auto-start crash when `host` config is null** - The `host` configuration property was validated with `Match.Optional(String)`, which rejects `null` values. When no `host` is explicitly configured, the value is `null` and the agent infers it from `os.hostname()` at runtime. Changed validation to accept `null` so the agent auto-starts correctly without an explicit `host` setting.
+
 ### v1.0.28 (Environment Variable Configuration)
 
 - **Environment variable fallback for all config options** - The agent can now be configured entirely via environment variables, with no `Meteor.settings` required. Set `SKYSIGNAL_API_KEY` and the agent auto-starts. Every server-side config option has a corresponding `SKYSIGNAL_*` env var (e.g., `SKYSIGNAL_DEBUG`, `SKYSIGNAL_TRACE_SAMPLE_RATE`, `SKYSIGNAL_COLLECT_TRACES`). Priority order: Meteor.settings (highest) > env vars > defaults. This is useful for Docker/CI deployments where injecting env vars is easier than mounting settings files.
