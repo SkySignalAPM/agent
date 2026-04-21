@@ -144,7 +144,9 @@ class SkySignalAgentClass {
 			environmentInterval: 1800000, // 30 min
 			// Vulnerability scanning
 			collectVulnerabilities: true,
-			vulnerabilitiesInterval: 3600000 // 1 hour
+			vulnerabilitiesInterval: 3600000, // 1 hour
+			// Aggregation ingest (reduces writes on Subscriptions / LiveQueries)
+			ingestAggregation: false
 		};
 
 		this.client = null;
@@ -521,9 +523,11 @@ class SkySignalAgentClass {
 			try {
 				this.collectors.ddpConnections = new DDPCollector({
 					client: this.client,
+					host: this.config.host,
 					appVersion: this.config.appVersion,
 					buildHash: this.config.buildHash,
 					interval: this.config.ddpConnectionsInterval,
+					ingestAggregation: this.config.ingestAggregation === true,
 					debug: this.config.debug
 				});
 				setTimeout(() => {
@@ -572,6 +576,7 @@ class SkySignalAgentClass {
 					buildHash: this.config.buildHash,
 					interval: this.config.liveQueriesInterval,
 					maxObservers: this.config.liveQueriesMaxObservers,
+					ingestAggregation: this.config.ingestAggregation === true,
 					debug: this.config.debug
 				};
 
