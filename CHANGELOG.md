@@ -1,13 +1,13 @@
 
 # Changelog
 
-### v1.0.30 (Agent-Side Aggregation - Opt-In)
+### v1.0.30 (Agent-Side Aggregation - Default On)
 
-- **New `ingestAggregation` config flag** - When enabled (default: **false**), the agent rolls up per-observer and per-subscription telemetry into fixed-shape aggregates on the agent side and posts them to two new REST endpoints (`/api/v1/live-queries/aggregates` and `/api/v1/subscriptions/aggregates`) on an adaptive flush interval. For high-volume apps (thousands of observers / many subscriptions), this cuts server ingest row counts by 10-100× with no loss of dashboard-visible metrics. Opt-in because the platform's aggregation fallback path requires platform-side support for aggregate rollups and is only present in platform versions that ship with this feature.
-  - Enable via `SkySignalAgent.configure({ ingestAggregation: true })` or `SKYSIGNAL_INGEST_AGGREGATION=true`.
+- **New `ingestAggregation` config flag** - When enabled (default: **true**), the agent rolls up per-observer and per-subscription telemetry into fixed-shape aggregates on the agent side and posts them to two new REST endpoints (`/api/v1/live-queries/aggregates` and `/api/v1/subscriptions/aggregates`) on an adaptive flush interval. For high-volume apps (thousands of observers / many subscriptions), this cuts server ingest row counts by 10-100× with no loss of dashboard-visible metrics. Requires platform-side support for aggregate rollups (present in platform versions that ship with this feature); older platforms return 404 on the aggregate endpoints and the agent falls back to entity ingest without losing data.
+  - Disable via `SkySignalAgent.configure({ ingestAggregation: false })` or `SKYSIGNAL_INGEST_AGGREGATION=false` if you need per-entity records for debugging.
   - Adaptive flush interval - The server responds with the current recommended flush interval and sample rate (per site, based on recent write volume). The agent honors the server's guidance on the next flush. Default flush interval is 60 seconds; high-volume sites can be pushed to 2-5 minutes automatically.
-  - **Backwards compatible** - When left disabled, the agent continues posting per-observer and per-subscription records exactly as before. Platform versions older than the aggregation feature will simply return 404 on the aggregate endpoints and the agent falls back to entity ingest without losing data.
-  - **Migration guidance** - New deployments on supported platform versions should set `ingestAggregation: true` as part of onboarding. Existing deployments can flip the flag during a low-traffic window; the server auto-detects aggregate vs. entity data and the dashboard's "Aggregated ingest" chip indicates which path is active.
+  - **Backwards compatible** - When disabled, the agent posts per-observer and per-subscription records exactly as in previous versions. Platform versions older than the aggregation feature will simply return 404 on the aggregate endpoints and the agent falls back to entity ingest without losing data.
+  - **Migration guidance** - Upgrading from a pre-v1.0.30 agent flips you onto the aggregate path automatically. The server auto-detects aggregate vs. entity data and the dashboard's "Aggregated ingest" chip indicates which path is active.
 
 ### v1.0.29 (Host Config Fix)
 

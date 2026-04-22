@@ -146,7 +146,7 @@ class SkySignalAgentClass {
 			collectVulnerabilities: true,
 			vulnerabilitiesInterval: 3600000, // 1 hour
 			// Aggregation ingest (reduces writes on Subscriptions / LiveQueries)
-			ingestAggregation: false
+			ingestAggregation: true
 		};
 
 		this.client = null;

@@ -216,20 +216,18 @@ All collection interval and performance options also have corresponding `SKYSIGN
 | `collectPublications` | Boolean | `true` | Detect publication over-fetching and missing projections |
 | `collectEnvironment` | Boolean | `true` | Capture environment metadata (packages, flags, OS info) |
 | `collectVulnerabilities` | Boolean | `true` | Run `npm audit` scans and report high/critical CVEs |
-| `ingestAggregation` | Boolean | `false` | **Opt-in.** Roll up live query / subscription telemetry into fixed-shape aggregates before shipping. Reduces server ingest row counts 10-100× on high-volume apps. Requires a platform version that supports the aggregate ingest endpoints (v1.0.30+). When disabled, the agent continues posting per-observer / per-subscription records exactly as before. |
+| `ingestAggregation` | Boolean | `true` | Roll up live query / subscription telemetry into fixed-shape aggregates before shipping. Reduces server ingest row counts 10-100× on high-volume apps. Requires a platform version that supports the aggregate ingest endpoints (v1.0.30+). Set to `false` to post per-observer / per-subscription records instead. |
 
-### Agent-Side Aggregation (Opt-In)
+### Agent-Side Aggregation
 
-When `ingestAggregation` is enabled, the `LiveQueriesCollector` and `DDPCollector` pre-aggregate telemetry on the agent into two compact payload shapes (one per live query signature, one per publication + params signature) and POST them to:
+When `ingestAggregation` is enabled (the default), the `LiveQueriesCollector` and `DDPCollector` pre-aggregate telemetry on the agent into two compact payload shapes (one per live query signature, one per publication + params signature) and POST them to:
 
 - `POST /api/v1/live-queries/aggregates`
 - `POST /api/v1/subscriptions/aggregates`
 
 The platform responds with the current recommended flush interval and aggregate sample rate for the site. The agent honors the guidance on its next flush, letting the platform dial back flush frequency when a site is under load without requiring a restart.
 
-**When to enable:** apps with >1000 observers/minute or >500 distinct subscription signatures/minute, where per-entity ingest is dominating Mongo storage and row counts.
-
-**When to leave disabled:** low-volume apps (the dashboard UX is identical either way) and any deployment on a platform version older than v1.0.30 (the aggregate endpoints will 404 and the entity path is the only way to ingest).
+**When to disable:** deployments on a platform version older than v1.0.30 (the aggregate endpoints will 404), or when you specifically need per-entity records for debugging. Disabling is also harmless on low-volume apps — the dashboard UX is identical either way.
 
 The platform dashboard shows an **"Aggregated ingest"** chip on the Live Queries and Pub/Sub tabs when metrics for the selected time range were served from the aggregate path.
 
