@@ -1,6 +1,11 @@
 
 # Changelog
 
+### v1.0.31 (Browser RUM Transport Fix)
+
+- **Fix uncaught error from `navigator.sendBeacon()` on Chromium M73–M80 kernels** - The browser RUM (`RUMClient`) and error (`ErrorTracker`) transports call `navigator.sendBeacon()` with a Blob whose `Content-Type` is `application/json`. On older Chromium kernels (~M73–M80), `sendBeacon()` with a non-CORS-safelisted Blob Content-Type **throws synchronously** (see [crbug.com/490015](http://crbug.com/490015)) instead of returning `false`. Because the call was made directly inside an `if` condition that expected a `false` return to trigger the `fetch` fallback, the exception escaped uncaught and the fallback never ran — so RUM/error data silently stopped flowing on those browsers (and the throw was re-captured by the error reporter). Both `RUMClient._send()` and `ErrorTracker._sendError()` now wrap the `sendBeacon()` call in try/catch, treating a synchronous throw identically to a `false` return and falling through to the `fetch` with `keepalive` path, which works on these kernels. The Blob `Content-Type` is intentionally left as `application/json` so server-side body parsing is unaffected. (fixes [#15](https://github.com/SkySignalAPM/agent/issues/15))
+- **New tests: synchronous `sendBeacon` throw fallback** - Added regression tests to `RUMClient` and `ErrorTracker` verifying that when `sendBeacon()` throws, the call does not propagate and the `fetch` fallback is invoked exactly once.
+
 ### v1.0.30 (Agent-Side Aggregation - Default On)
 
 - **New `ingestAggregation` config flag** - When enabled (default: **true**), the agent rolls up per-observer and per-subscription telemetry into fixed-shape aggregates on the agent side and posts them to two new REST endpoints (`/api/v1/live-queries/aggregates` and `/api/v1/subscriptions/aggregates`) on an adaptive flush interval. For high-volume apps (thousands of observers / many subscriptions), this cuts server ingest row counts by 10-100× with no loss of dashboard-visible metrics. Requires platform-side support for aggregate rollups (present in platform versions that ship with this feature); older platforms return 404 on the aggregate endpoints and the agent falls back to entity ingest without losing data.

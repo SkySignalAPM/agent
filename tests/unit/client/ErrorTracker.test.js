@@ -500,6 +500,24 @@ describe('ErrorTracker', function () {
       expect(fetch.calledOnce).to.be.true;
     });
 
+    // Regression: issue #15. Chromium M73–M80 kernels THROW synchronously
+    // (crbug.com/490015) instead of returning false when sendBeacon gets a
+    // non-CORS-safelisted Blob Content-Type. The throw must be swallowed and
+    // the fetch fallback must still run — otherwise the error escapes uncaught.
+    it('falls back to fetch when sendBeacon throws synchronously', async function () {
+      navigator.sendBeacon.throws(
+        new Error("Failed to execute 'sendBeacon' on 'Navigator': ... is disabled temporarily.")
+      );
+      let threw = false;
+      try {
+        await tracker._sendError({ type: 'Error', message: 'small' });
+      } catch (_e) {
+        threw = true;
+      }
+      expect(threw).to.be.false;
+      expect(fetch.calledOnce).to.be.true;
+    });
+
     it('uses fetch for payloads with screenshots', async function () {
       await tracker._sendError({ type: 'Error', message: 'test', screenshot: 'data:image/png;base64,...' });
       expect(fetch.calledOnce).to.be.true;

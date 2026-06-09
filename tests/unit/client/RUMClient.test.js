@@ -150,6 +150,59 @@ describe('RUMClient', function () {
   });
 
   // ==========================================
+  // _send (transport selection + fallback)
+  // ==========================================
+  describe('_send', function () {
+    let savedSendBeacon, savedFetch;
+
+    beforeEach(function () {
+      savedSendBeacon = global.navigator.sendBeacon;
+      savedFetch = global.fetch;
+    });
+
+    afterEach(function () {
+      global.navigator.sendBeacon = savedSendBeacon;
+      global.fetch = savedFetch;
+    });
+
+    it('uses sendBeacon when it succeeds and does not call fetch', function () {
+      const client = new RUMClient({ publicKey: 'pk_test' });
+      global.navigator.sendBeacon = sinon.stub().returns(true);
+      global.fetch = sinon.stub().resolves({ ok: true, status: 200 });
+
+      client._send([{ type: 'pageLoad', duration: 100 }]);
+
+      expect(global.navigator.sendBeacon.calledOnce).to.be.true;
+      expect(global.fetch.called).to.be.false;
+    });
+
+    it('falls back to fetch when sendBeacon returns false', function () {
+      const client = new RUMClient({ publicKey: 'pk_test' });
+      global.navigator.sendBeacon = sinon.stub().returns(false);
+      global.fetch = sinon.stub().resolves({ ok: true, status: 200 });
+
+      client._send([{ type: 'pageLoad', duration: 100 }]);
+
+      expect(global.fetch.calledOnce).to.be.true;
+    });
+
+    // Regression: issue #15. Chromium M73–M80 kernels THROW synchronously
+    // (crbug.com/490015) instead of returning false when sendBeacon gets a
+    // non-CORS-safelisted Blob Content-Type. The throw must be swallowed and
+    // the fetch fallback must still run — otherwise the error escapes uncaught.
+    it('falls back to fetch when sendBeacon throws synchronously', function () {
+      const client = new RUMClient({ publicKey: 'pk_test' });
+      global.navigator.sendBeacon = sinon.stub().throws(
+        new Error("Failed to execute 'sendBeacon' on 'Navigator': ... is disabled temporarily.")
+      );
+      global.fetch = sinon.stub().resolves({ ok: true, status: 200 });
+
+      expect(() => client._send([{ type: 'pageLoad', duration: 100 }])).to.not.throw();
+      expect(global.fetch.calledOnce).to.be.true;
+    });
+  });
+
+  // ==========================================
   // _getBeaconUrl
   // ==========================================
   describe('_getBeaconUrl', function () {

@@ -263,14 +263,24 @@ export default class RUMClient {
 		if (navigator.sendBeacon) {
 			const url = this._getBeaconUrl();
 			const blob = new Blob([json], { type: 'application/json' });
-			const queued = navigator.sendBeacon(url, blob);
+			// Older Chromium kernels (M73–M80) THROW synchronously instead of
+			// returning false when sendBeacon is handed a Blob whose Content-Type
+			// is not CORS-safelisted (crbug.com/490015). Guard the call so the
+			// exception can't escape — a throw is treated like a false return and
+			// we fall through to the fetch fallback below.
+			let queued = false;
+			try {
+				queued = navigator.sendBeacon(url, blob);
+			} catch (_e) {
+				queued = false;
+			}
 			if (queued) {
 				if (this.config.debug) {
 					console.log('[SkySignal RUM] Beacon sent', { count: measurements.length });
 				}
 				return;
 			}
-			// sendBeacon returned false — fall through to fetch
+			// sendBeacon returned false or threw — fall through to fetch
 		}
 
 		// Fallback: fetch with keepalive
