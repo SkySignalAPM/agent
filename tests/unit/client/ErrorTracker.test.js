@@ -28,6 +28,7 @@ describe('ErrorTracker', function () {
       expect(tracker.config.captureUnhandledRejections).to.be.true;
       expect(tracker.config.captureConsoleErrors).to.be.false;
       expect(tracker.config.ignoreErrors).to.deep.equal([]);
+      expect(tracker.config.appVersion).to.be.null;
     });
 
     it('respects disabled flag', function () {
@@ -528,6 +529,26 @@ describe('ErrorTracker', function () {
       await tracker._handleError({ type: 'Error', message: 'test' });
       const payload = tracker._sendError.firstCall.args[0];
       expect(payload.capturedAt).to.be.a('string');
+    });
+
+    it('includes the configured appVersion in the payload', async function () {
+      tracker.config.appVersion = '1.4.2';
+      await tracker._handleError({ type: 'Error', message: 'boom' });
+      const payload = tracker._sendError.firstCall.args[0];
+      expect(payload.appVersion).to.equal('1.4.2');
+    });
+
+    it('lets a per-error appVersion override the configured value', async function () {
+      tracker.config.appVersion = '1.4.2';
+      await tracker._handleError({ type: 'Error', message: 'boom', appVersion: '2.0.0' });
+      const payload = tracker._sendError.firstCall.args[0];
+      expect(payload.appVersion).to.equal('2.0.0');
+    });
+
+    it('omits appVersion when none is configured', async function () {
+      await tracker._handleError({ type: 'Error', message: 'boom' });
+      const payload = tracker._sendError.firstCall.args[0];
+      expect(payload.appVersion).to.be.undefined;
     });
   });
 

@@ -81,6 +81,7 @@ export default class ErrorTracker {
 	 * @param {boolean} [config.captureUnhandledRejections=true] - Capture unhandled Promise rejections
 	 * @param {boolean} [config.captureConsoleErrors=false] - Intercept console.error calls
 	 * @param {Array<string|RegExp>} [config.ignoreErrors=[]] - Patterns (string or RegExp) for errors to ignore; matched against the error message, stack trace, and filename
+	 * @param {string} [config.appVersion] - Application version stamped on every captured error
 	 * @param {Function} [config.beforeSend] - Hook to modify errors before sending (return false to skip)
 	 * @param {boolean} [config.debug=false] - Enable debug logging
 	 */
@@ -88,6 +89,7 @@ export default class ErrorTracker {
 		this.config = {
 			enabled: config.enabled !== false,
 			publicKey: config.publicKey,
+			appVersion: config.appVersion || null,
 			endpoint: config.endpoint || '/api/v1/errors',
 			attachScreenshots: config.attachScreenshots || false,
 			captureUnhandledRejections: config.captureUnhandledRejections !== false,
@@ -429,8 +431,11 @@ export default class ErrorTracker {
 				});
 			}
 
-			// Build error payload
+			// Build error payload. appVersion defaults from config, but a
+			// per-error value (e.g. captureError context, spread via ...error)
+			// wins. `|| undefined` keeps the key out of the JSON when unset.
 			const errorPayload = {
+				appVersion: this.config.appVersion || undefined,
 				...error,
 				screenshot: screenshot,
 				capturedAt: new Date().toISOString()

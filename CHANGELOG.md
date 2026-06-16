@@ -1,6 +1,10 @@
 
 # Changelog
 
+### v1.0.33 (App Version on Browser Errors)
+
+- **Browser errors now carry the app version** - The client `ErrorTracker` stamps an `appVersion` onto every captured error (via a new `errorTracking.appVersion` setting, falling back to `Meteor.settings.public.skysignal.appVersion`, `Meteor.settings.public.appVersion`, then `__meteor_runtime_config__.appVersion`). The SkySignal Error Details screen shows this version, making it possible to tell whether a reported bug originates from an old or a current build. Errors reported without a version are unaffected. (fixes [#17](https://github.com/SkySignalAPM/agent/issues/17))
+
 ### v1.0.32 (Ignore Errors by Stack Trace)
 
 - **`ignoreErrors` now matches the stack trace and filename, not just the message** - Each `ignoreErrors` entry (string or RegExp) is tested against the error's message, stack trace, and filename; a match on any one of them suppresses the error. This makes it possible to reliably filter browser-extension noise (e.g. `ignoreErrors: ["chrome-extension://"]`), whose message is often the generic cross-origin `"Script error."` while the originating `chrome-extension://` URL only appears in the stack trace or filename. Existing message-based patterns continue to work unchanged. (fixes [#18](https://github.com/SkySignalAPM/agent/issues/18))

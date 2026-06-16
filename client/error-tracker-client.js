@@ -76,9 +76,22 @@ if (typeof Meteor !== 'undefined' && Meteor.settings && Meteor.settings.public &
 				endpoint = `${settings.endpoint}/api/v1/errors`;
 			}
 
+			// Resolve the app version for tagging client errors. Mirrors the
+			// server agent's client-available detection order:
+			// errorTracking.appVersion -> public.skysignal.appVersion ->
+			// public.appVersion -> __meteor_runtime_config__.appVersion.
+			const appVersion =
+				errorTrackingSettings.appVersion ||
+				settings.appVersion ||
+				Meteor.settings.public.appVersion ||
+				(typeof __meteor_runtime_config__ !== 'undefined' &&
+					__meteor_runtime_config__.appVersion) ||
+				null;
+
 			// Configure error tracker
 			const config = {
 				publicKey: settings.publicKey,
+				appVersion: appVersion,
 				endpoint: endpoint,
 				enabled: true,
 				attachScreenshots: errorTrackingSettings.attachScreenshots || false,

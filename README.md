@@ -159,7 +159,7 @@ All collection interval and performance options also have corresponding `SKYSIGN
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `host` | String | `os.hostname()` | Host identifier for this instance |
-| `appVersion` | String | Auto-detect | App version from package.json or manually configured |
+| `appVersion` | String | Auto-detect | App version from package.json or manually configured; also tags client/browser errors |
 | `buildHash` | String | Auto-detect | Build hash for source map lookup. Auto-detects from `BUILD_HASH` or `GIT_SHA` environment variables |
 
 ### Batching Configuration
