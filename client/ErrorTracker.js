@@ -30,7 +30,7 @@
  *         "screenshotOnErrorTypes": ["FatalError", "UnhandledRejection"],
  *         "captureUnhandledRejections": true,
  *         "captureConsoleErrors": false,
- *         "ignoreErrors": ["ResizeObserver loop"],
+ *         "ignoreErrors": ["ResizeObserver loop", "chrome-extension://"],
  *         "debug": false
  *       }
  *     }
@@ -80,7 +80,7 @@ export default class ErrorTracker {
 	 * @param {string[]} [config.screenshotOnErrorTypes] - Only screenshot these error types
 	 * @param {boolean} [config.captureUnhandledRejections=true] - Capture unhandled Promise rejections
 	 * @param {boolean} [config.captureConsoleErrors=false] - Intercept console.error calls
-	 * @param {Array<string|RegExp>} [config.ignoreErrors=[]] - Patterns for errors to ignore
+	 * @param {Array<string|RegExp>} [config.ignoreErrors=[]] - Patterns (string or RegExp) for errors to ignore; matched against the error message, stack trace, and filename
 	 * @param {Function} [config.beforeSend] - Hook to modify errors before sending (return false to skip)
 	 * @param {boolean} [config.debug=false] - Enable debug logging
 	 */
@@ -276,17 +276,32 @@ export default class ErrorTracker {
 	}
 
 	/**
-	 * Check if an error message matches any ignore patterns.
+	 * Check if an error matches any ignore patterns. Each pattern (string or
+	 * RegExp) is tested against the error message, stack trace, and filename;
+	 * a match on any one of them causes the error to be ignored. This lets
+	 * patterns like "chrome-extension://" filter browser-extension noise whose
+	 * message is generic (often the cross-origin "Script error.") but whose
+	 * stack trace or filename identifies the source.
 	 * @private
-	 * @param {string} errorMessage - The error message to check
+	 * @param {string} [message] - The error message
+	 * @param {string} [stack] - The error stack trace
+	 * @param {string} [filename] - The script filename the error originated from
 	 * @returns {boolean} True if error should be ignored
 	 */
-	_shouldIgnoreError(errorMessage) {
+	_shouldIgnoreError(message, stack, filename) {
+		const haystacks = [message, stack, filename].filter(
+			s => typeof s === 'string' && s.length > 0
+		);
+		if (haystacks.length === 0) return false;
+
 		return this.config.ignoreErrors.some(pattern => {
 			if (pattern instanceof RegExp) {
-				return pattern.test(errorMessage);
+				return haystacks.some(h => {
+					pattern.lastIndex = 0; // guard stateful global/sticky regexes
+					return pattern.test(h);
+				});
 			}
-			return errorMessage.includes(pattern);
+			return haystacks.some(h => h.includes(pattern));
 		});
 	}
 
@@ -387,7 +402,7 @@ export default class ErrorTracker {
 	 */
 	async _handleError(error) {
 		// Check if error should be ignored
-		if (this._shouldIgnoreError(error.message)) {
+		if (this._shouldIgnoreError(error.message, error.stack, error.filename)) {
 			if (this.config.debug) {
 				console.log('[SkySignal ErrorTracker] Ignored error', error.message);
 			}

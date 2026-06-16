@@ -1,6 +1,10 @@
 
 # Changelog
 
+### v1.0.32 (Ignore Errors by Stack Trace)
+
+- **`ignoreErrors` now matches the stack trace and filename, not just the message** - Each `ignoreErrors` entry (string or RegExp) is tested against the error's message, stack trace, and filename; a match on any one of them suppresses the error. This makes it possible to reliably filter browser-extension noise (e.g. `ignoreErrors: ["chrome-extension://"]`), whose message is often the generic cross-origin `"Script error."` while the originating `chrome-extension://` URL only appears in the stack trace or filename. Existing message-based patterns continue to work unchanged. (fixes [#18](https://github.com/SkySignalAPM/agent/issues/18))
+
 ### v1.0.31 (Browser RUM Transport Fix)
 
 - **Fix uncaught error from `navigator.sendBeacon()` on Chromium M73–M80 kernels** - The browser RUM (`RUMClient`) and error (`ErrorTracker`) transports call `navigator.sendBeacon()` with a Blob whose `Content-Type` is `application/json`. On older Chromium kernels (~M73–M80), `sendBeacon()` with a non-CORS-safelisted Blob Content-Type **throws synchronously** (see [crbug.com/490015](http://crbug.com/490015)) instead of returning `false`. Because the call was made directly inside an `if` condition that expected a `false` return to trigger the `fetch` fallback, the exception escaped uncaught and the fallback never ran — so RUM/error data silently stopped flowing on those browsers (and the throw was re-captured by the error reporter). Both `RUMClient._send()` and `ErrorTracker._sendError()` now wrap the `sendBeacon()` call in try/catch, treating a synchronous throw identically to a `false` return and falling through to the `fetch` with `keepalive` path, which works on these kernels. The Blob `Content-Type` is intentionally left as `application/json` so server-side body parsing is unaffected. (fixes [#15](https://github.com/SkySignalAPM/agent/issues/15))

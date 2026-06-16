@@ -22,7 +22,7 @@
  *         ],
  *         "captureUnhandledRejections": true,  // Capture unhandled promise rejections (default: true)
  *         "captureConsoleErrors": false,    // Capture console.error calls (default: false)
- *         "ignoreErrors": [],               // Error messages/patterns to ignore (optional)
+ *         "ignoreErrors": [],               // Patterns to ignore; matched against message, stack trace, and filename (optional)
  *         "debug": false                    // Enable debug logging (default: false)
  *       }
  *     }
@@ -36,9 +36,10 @@
  *   "[data-my-sensitive-attr]"
  * ]
  *
- * Example ignore errors:
+ * Example ignore errors (matched against message, stack trace, and filename):
  * "ignoreErrors": [
  *   "ResizeObserver loop limit exceeded",
+ *   "chrome-extension://",
  *   /Network error/i
  * ]
  */

@@ -191,6 +191,52 @@ describe('ErrorTracker', function () {
       expect(tracker._shouldIgnoreError('script error.')).to.be.true;
       expect(tracker._shouldIgnoreError('ReferenceError: x')).to.be.false;
     });
+
+    it('matches a string pattern in the stack trace', function () {
+      const tracker = new ErrorTracker({
+        publicKey: 'pk_test',
+        ignoreErrors: ['chrome-extension://']
+      });
+      expect(tracker._shouldIgnoreError(
+        'Script error.',
+        'Error: boom\n    at chrome-extension://abcdef/content.js:1:1'
+      )).to.be.true;
+    });
+
+    it('matches a RegExp pattern in the stack trace', function () {
+      const tracker = new ErrorTracker({
+        publicKey: 'pk_test',
+        ignoreErrors: [/chrome-extension:\/\//]
+      });
+      expect(tracker._shouldIgnoreError(
+        'Script error.',
+        'Error: boom\n    at chrome-extension://abcdef/content.js:1:1'
+      )).to.be.true;
+    });
+
+    it('matches a pattern in the filename', function () {
+      const tracker = new ErrorTracker({
+        publicKey: 'pk_test',
+        ignoreErrors: ['chrome-extension://']
+      });
+      expect(tracker._shouldIgnoreError(
+        'Script error.',
+        undefined,
+        'chrome-extension://abcdef/content.js'
+      )).to.be.true;
+    });
+
+    it('does not match when the pattern is absent from message, stack, and filename', function () {
+      const tracker = new ErrorTracker({
+        publicKey: 'pk_test',
+        ignoreErrors: ['chrome-extension://']
+      });
+      expect(tracker._shouldIgnoreError(
+        'TypeError: x is not a function',
+        'TypeError: x is not a function\n    at app.js:10:5',
+        'app.js'
+      )).to.be.false;
+    });
   });
 
   describe('_generateFingerprint', function () {
@@ -414,6 +460,17 @@ describe('ErrorTracker', function () {
     it('skips ignored errors', async function () {
       tracker.config.ignoreErrors = ['ResizeObserver'];
       await tracker._handleError({ message: 'ResizeObserver loop limit exceeded', type: 'Error' });
+      expect(tracker._sendError.called).to.be.false;
+    });
+
+    it('ignores errors whose stack trace matches an ignore pattern', async function () {
+      tracker.config.ignoreErrors = ['chrome-extension://'];
+      await tracker._handleError({
+        type: 'Error',
+        message: 'Script error.',
+        stack: 'Error: boom\n    at chrome-extension://abcdef/content.js:1:1',
+        filename: 'chrome-extension://abcdef/content.js'
+      });
       expect(tracker._sendError.called).to.be.false;
     });
 
