@@ -194,6 +194,36 @@ describe('MergeboxCollector', function () {
       expect(rowB.collectionName).to.equal('messages');
     });
 
+    it('splits across 3 subs with an exact integer remainder (non-divisible bytes)', function () {
+      const fields = { a: 'alpha', b: 'bravo', c: 'charlie payload here' };
+      const handles = ['Nsub1', 'Nsub2', 'Nsub3'];
+      const docView = makeDocView(fields, handles);
+      const namedSubs = new Map([
+        ['sub1', { _name: 'pubA' }],
+        ['sub2', { _name: 'pubB' }],
+        ['sub3', { _name: 'pubC' }]
+      ]);
+      const session = makeSession(
+        's',
+        new Map([['messages', makeCollectionView({ d: docView })]]),
+        namedSubs
+      );
+      Meteor.server = makeServer([session], { messages: STRATEGIES.SERVER_MERGE });
+
+      collector._collect();
+
+      const rows = emittedRows();
+      expect(rows).to.have.lengthOf(3);
+
+      const fullBytes = docBytesOf(fields);
+      const sum = rows.reduce((acc, r) => acc + r.bytesHeld, 0);
+      // EXACTLY sum-preserving whether or not fullBytes divides evenly by 3.
+      expect(sum).to.equal(fullBytes);
+      // Largest-remainder split -> per-handle shares differ by at most 1 byte.
+      const vals = rows.map(r => r.bytesHeld).sort((x, y) => x - y);
+      expect(vals[vals.length - 1] - vals[0]).to.be.at.most(1);
+    });
+
     it('does not emit a separate per-collection truth row (avoids double-count)', function () {
       const fields = { text: 'x' };
       const handles = ['Nsub1', 'Nsub2'];
@@ -511,6 +541,38 @@ describe('MergeboxCollector', function () {
   });
 
   // ==========================================
+  // buildHash
+  // ==========================================
+  describe('buildHash', function () {
+    it('omits buildHash when not configured', function () {
+      const session = makeSession(
+        's',
+        new Map([['c', makeCollectionView({ d: makeDocView({ a: 'x' }, ['Ux']) })]])
+      );
+      Meteor.server = makeServer([session]);
+      collector._collect();
+      expect(emittedRows()[0]).to.not.have.property('buildHash');
+    });
+
+    it('stamps buildHash on rows when configured', function () {
+      const stub = sinon.stub();
+      const c = new MergeboxCollector({
+        client: { addMergeboxMetric: stub },
+        host: 'h',
+        buildHash: 'abc123'
+      });
+      const session = makeSession(
+        's',
+        new Map([['c', makeCollectionView({ d: makeDocView({ a: 'x' }, ['Ux']) })]])
+      );
+      Meteor.server = makeServer([session]);
+      c._collect();
+      const row = stub.getCalls().map(x => x.args[0])[0];
+      expect(row.buildHash).to.equal('abc123');
+    });
+  });
+
+  // ==========================================
   // maxRows cap
   // ==========================================
   describe('maxRows cap', function () {
@@ -537,6 +599,32 @@ describe('MergeboxCollector', function () {
       expect(names).to.include('large');
       expect(names).to.include('medium');
       expect(names).to.not.include('small');
+    });
+  });
+
+  // ==========================================
+  // maxDocsPerSession cap
+  // ==========================================
+  describe('maxDocsPerSession cap', function () {
+    it('stops walking a session once the cap is reached (for...of break)', function () {
+      const stub = sinon.stub();
+      const c = new MergeboxCollector({
+        client: { addMergeboxMetric: stub },
+        host: 'h',
+        maxDocsPerSession: 2
+      });
+      const docs = {};
+      const namedSubs = new Map();
+      for (let i = 0; i < 5; i++) {
+        docs[`d${i}`] = makeDocView({ v: `value-${i}` }, [`Nsub${i}`]);
+        namedSubs.set(`sub${i}`, { _name: `pub${i}` });
+      }
+      const session = makeSession('s', new Map([['c', makeCollectionView(docs)]]), namedSubs);
+      Meteor.server = makeServer([session]);
+      c._collect();
+      const rows = stub.getCalls().map(x => x.args[0]);
+      // cap = 2 -> only the first 2 docs walked -> 2 distinct-pub rows, not 5
+      expect(rows).to.have.lengthOf(2);
     });
   });
 
