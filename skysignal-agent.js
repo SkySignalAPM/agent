@@ -16,6 +16,7 @@ import DeprecatedApiCollector from "./lib/collectors/DeprecatedApiCollector.js";
 import PublicationTracer from "./lib/collectors/PublicationTracer.js";
 import EnvironmentCollector from "./lib/collectors/EnvironmentCollector.js";
 import VulnerabilityCollector from "./lib/collectors/VulnerabilityCollector.js";
+import MergeboxCollector from "./lib/collectors/MergeboxCollector.js";
 import JobCollector from "./lib/collectors/jobs/index.js";
 import SkySignalClient from "./lib/SkySignalClient.js";
 import { mergeConfig } from "./lib/config.js";
@@ -145,6 +146,12 @@ class SkySignalAgentClass {
 			// Vulnerability scanning
 			collectVulnerabilities: true,
 			vulnerabilitiesInterval: 3600000, // 1 hour
+			// Mergebox RAM residency (ships dark — opt-in)
+			collectMergebox: false,
+			mergeboxInterval: 60000, // 60s default
+			mergeboxSampleRate: 1.0, // per-session sample rate
+			mergeboxMaxSessions: 2000, // cap sessions walked per tick
+			mergeboxMaxDocsPerSession: 50000, // cap docs walked per session per tick
 			// Aggregation ingest (reduces writes on Subscriptions / LiveQueries)
 			ingestAggregation: true
 		};
@@ -761,6 +768,30 @@ class SkySignalAgentClass {
 				}, this._getStaggerDelay());
 			} catch (error) {
 				this._warn("Failed to start vulnerability collector:", error.message);
+			}
+		}
+
+		if (this.config.collectMergebox) {
+			try {
+				this.collectors.mergebox = new MergeboxCollector({
+					client: this.client,
+					host: this.config.host,
+					appVersion: this.config.appVersion,
+					buildHash: this.config.buildHash,
+					interval: this.config.mergeboxInterval,
+					sampleRate: this.config.mergeboxSampleRate,
+					maxSessions: this.config.mergeboxMaxSessions,
+					maxDocsPerSession: this.config.mergeboxMaxDocsPerSession,
+					debug: this.config.debug
+				});
+				setTimeout(() => {
+					if (this.started && this.collectors.mergebox) {
+						this.collectors.mergebox.start();
+						this._log("Mergebox residency collector started");
+					}
+				}, this._getStaggerDelay());
+			} catch (error) {
+				this._warn("Failed to start mergebox collector:", error.message);
 			}
 		}
 

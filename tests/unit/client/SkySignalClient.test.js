@@ -70,7 +70,8 @@ describe('SkySignalClient', function () {
         'dependencies', 'mongoPoolMetrics', 'collectionStats',
         'ddpConnections', 'subscriptions', 'liveQueries', 'rum',
         'logs', 'dnsMetrics', 'outboundHttp', 'cpuProfiles',
-        'deprecatedApis', 'publications', 'environment', 'vulnerabilities'
+        'deprecatedApis', 'publications', 'environment', 'vulnerabilities',
+        'mergebox'
       ];
       for (const type of types) {
         expect(client.batches[type], `batches.${type}`).to.be.an('array').that.is.empty;
@@ -179,7 +180,8 @@ describe('SkySignalClient', function () {
         deprecatedApis: '/api/v1/metrics/deprecated-apis',
         publications: '/api/v1/metrics/publications',
         environment: '/api/v1/metrics/environment',
-        vulnerabilities: '/api/v1/metrics/vulnerabilities'
+        vulnerabilities: '/api/v1/metrics/vulnerabilities',
+        mergebox: '/api/v1/metrics/mergebox'
       };
 
       for (const [type, endpoint] of Object.entries(expected)) {

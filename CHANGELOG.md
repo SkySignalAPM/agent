@@ -1,6 +1,13 @@
 
 # Changelog
 
+### v1.1.0 (Mergebox RAM Residency Collector)
+
+- **New `MergeboxCollector`** - Measures Meteor's MERGEBOX RAM residency (the per-session, server-side cache of published documents) and posts per-(publication, collection) rollups to `POST /api/v1/metrics/mergebox`. The collector walks `Meteor.server.sessions` read-only, estimates the resident bytes each session's mergebox holds per published collection (sizing each `SessionDocumentView.dataByKey` field value directly), reads the publication strategy via `Meteor.server.getPublicationStrategy()` (reverse-mapped to `SERVER_MERGE` / `NO_MERGE` / `NO_MERGE_NO_HISTORY` / `unknown`), and attributes residency to subscriptions via a pure even-split across `existsIn`. The even-split is sum-preserving: the rows for a collection sum back to that collection's true residency. `connectionCount` is a count of distinct DDP sessions (never a list of connection ids).
+  - **Ships dark / opt-in** - `collectMergebox` defaults to **false**. Enable via `SkySignalAgent.configure({ collectMergebox: true })` or `SKYSIGNAL_COLLECT_MERGEBOX=true`.
+  - **Performance-bounded** - 60s default cadence (`mergeboxInterval`), per-session sampling (`mergeboxSampleRate`, every row stamps the rate for server-side extrapolation), `mergeboxMaxSessions` / `mergeboxMaxDocsPerSession` caps to bound a single synchronous tick, per-session try/catch, feature-detection of internal shapes, and a top-N output cap aligned with the server's 500-rows-per-POST limit. Read-only — never wraps `session.send` / `processMessage`.
+  - Requires platform-side support for the mergebox ingest endpoint (gated on the `ddp` feature / pro tier).
+
 ### v1.0.33 (App Version on Browser Errors)
 
 - **Browser errors now carry the app version** - The client `ErrorTracker` stamps an `appVersion` onto every captured error (via a new `errorTracking.appVersion` setting, falling back to `Meteor.settings.public.skysignal.appVersion`, `Meteor.settings.public.appVersion`, then `__meteor_runtime_config__.appVersion`). The SkySignal Error Details screen shows this version, making it possible to tell whether a reported bug originates from an old or a current build. Errors reported without a version are unaffected. (fixes [#17](https://github.com/SkySignalAPM/agent/issues/17))
