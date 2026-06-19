@@ -134,6 +134,7 @@ Every server-side configuration option has a corresponding environment variable.
 | `SKYSIGNAL_COLLECT_OUTBOUND_HTTP` | `collectOutboundHttp` | Boolean |
 | `SKYSIGNAL_COLLECT_CPU_PROFILES` | `collectCpuProfiles` | Boolean |
 | `SKYSIGNAL_COLLECT_LIVE_QUERIES` | `collectLiveQueries` | Boolean |
+| `SKYSIGNAL_COLLECT_MERGEBOX` | `collectMergebox` | Boolean |
 | `SKYSIGNAL_COLLECT_PUBLICATIONS` | `collectPublications` | Boolean |
 | `SKYSIGNAL_COLLECT_ENVIRONMENT` | `collectEnvironment` | Boolean |
 | `SKYSIGNAL_COLLECT_VULNERABILITIES` | `collectVulnerabilities` | Boolean |
@@ -216,7 +217,33 @@ All collection interval and performance options also have corresponding `SKYSIGN
 | `collectPublications` | Boolean | `true` | Detect publication over-fetching and missing projections |
 | `collectEnvironment` | Boolean | `true` | Capture environment metadata (packages, flags, OS info) |
 | `collectVulnerabilities` | Boolean | `true` | Run `npm audit` scans and report high/critical CVEs |
+| `collectMergebox` | Boolean | `false` | **Opt-in.** Attribute server-side mergebox RAM residency to publications/collections. Off by default; see [Mergebox Residency](#mergebox-residency-opt-in) for details and tuning |
 | `ingestAggregation` | Boolean | `true` | Roll up live query / subscription telemetry into fixed-shape aggregates before shipping. Reduces server ingest row counts 10-100× on high-volume apps. Requires a platform version that supports the aggregate ingest endpoints (v1.0.30+). Set to `false` to post per-observer / per-subscription records instead. |
+
+### Mergebox Residency (opt-in)
+
+`collectMergebox` is **disabled by default** — it is the one collector you must explicitly enable. When on, the agent takes a low-frequency, read-only snapshot of each DDP session's mergebox (Meteor's per-connection, server-side document cache) and reports estimated RAM residency per publication and collection, along with the active publication strategy (`SERVER_MERGE` / `NO_MERGE` / `NO_MERGE_NO_HISTORY` / `NO_MERGE_MULTI`).
+
+Enable it via settings or environment variable:
+
+```json
+{ "skysignal": { "collectMergebox": true } }
+```
+
+```bash
+SKYSIGNAL_COLLECT_MERGEBOX=true
+```
+
+Snapshot cost scales with sessions × collections × documents, so the collector is bounded by these safety knobs. Each also has a `SKYSIGNAL_*` environment variable (`SKYSIGNAL_MERGEBOX_INTERVAL`, `SKYSIGNAL_MERGEBOX_SAMPLE_RATE`, `SKYSIGNAL_MERGEBOX_MAX_SESSIONS`, `SKYSIGNAL_MERGEBOX_MAX_DOCS_PER_SESSION`):
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `mergeboxInterval` | Number | `60000` | Residency snapshot interval in ms (1 minute) |
+| `mergeboxSampleRate` | Number | `1.0` | Fraction of DDP sessions sampled per tick (0-1). Lower on very large fleets; stamped on each row so the server extrapolates |
+| `mergeboxMaxSessions` | Number | `2000` | Max sessions walked per snapshot tick |
+| `mergeboxMaxDocsPerSession` | Number | `50000` | Max documents inspected per session per tick |
+
+Requires a SkySignal plan with the DDP feature and a platform version that exposes the mergebox ingest endpoint.
 
 ### Agent-Side Aggregation
 
