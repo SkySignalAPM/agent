@@ -413,10 +413,10 @@ describe('MergeboxCollector', function () {
       expect(collector._resolveStrategyName(nh, 'c')).to.equal('NO_MERGE_NO_HISTORY');
     });
 
-    it('maps NO_MERGE_MULTI -> "unknown"', function () {
+    it('identity-maps NO_MERGE_MULTI', function () {
       global.DDPServer = { publicationStrategies: STRATEGIES };
       const server = { getPublicationStrategy() { return STRATEGIES.NO_MERGE_MULTI; } };
-      expect(collector._resolveStrategyName(server, 'c')).to.equal('unknown');
+      expect(collector._resolveStrategyName(server, 'c')).to.equal('NO_MERGE_MULTI');
     });
 
     it('maps an unrecognized object -> "unknown"', function () {
@@ -434,6 +434,9 @@ describe('MergeboxCollector', function () {
       // No global.DDPServer -> structural fallback by shape.
       const server = { getPublicationStrategy() { return { ...STRATEGIES.NO_MERGE }; } };
       expect(collector._resolveStrategyName(server, 'c')).to.equal('NO_MERGE');
+      // a dummy-document-view shape resolves structurally to NO_MERGE_MULTI
+      const multi = { getPublicationStrategy() { return { ...STRATEGIES.NO_MERGE_MULTI }; } };
+      expect(collector._resolveStrategyName(multi, 'c')).to.equal('NO_MERGE_MULTI');
     });
   });
 
@@ -461,7 +464,7 @@ describe('MergeboxCollector', function () {
   // DummyDocumentView (NO_MERGE_MULTI): docCount>0, bytesHeld~0
   // ==========================================
   describe('DummyDocumentView (empty dataByKey)', function () {
-    it('counts the doc but holds ~0 bytes and maps strategy to "unknown"', function () {
+    it('counts the doc but holds ~0 bytes and maps strategy to NO_MERGE_MULTI', function () {
       // DummyDocumentView has existsIn but no dataByKey field values.
       const dummy = { existsIn: new Set(['Ux']) }; // no dataByKey
       const session = makeSession(
@@ -477,7 +480,7 @@ describe('MergeboxCollector', function () {
       expect(rows).to.have.lengthOf(1);
       expect(rows[0].docCount).to.equal(1);
       expect(rows[0].bytesHeld).to.equal(0);
-      expect(rows[0].strategy).to.equal('unknown');
+      expect(rows[0].strategy).to.equal('NO_MERGE_MULTI');
     });
   });
 
