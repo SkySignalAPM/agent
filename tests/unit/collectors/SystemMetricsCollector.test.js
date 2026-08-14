@@ -8,7 +8,14 @@
 
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { constants } from 'perf_hooks';
 import SystemMetricsCollector from '../../../lib/collectors/SystemMetricsCollector.js';
+
+const {
+  NODE_PERFORMANCE_GC_MAJOR,
+  NODE_PERFORMANCE_GC_MINOR,
+  NODE_PERFORMANCE_GC_INCREMENTAL,
+} = constants;
 
 describe('SystemMetricsCollector', function () {
 
@@ -174,6 +181,41 @@ describe('SystemMetricsCollector', function () {
       collector.platform = 'unsupported_platform';
       const stats = await collector._getDiskStats();
       expect(stats.diskUsage).to.equal(0);
+    });
+  });
+
+  // ==========================================
+  // _getGcKind
+  // ==========================================
+  describe('_getGcKind', function () {
+
+    it('reads kind from entry.detail when present', function () {
+      const entry = { detail: { kind: NODE_PERFORMANCE_GC_MAJOR } };
+      expect(collector._getGcKind(entry)).to.equal(NODE_PERFORMANCE_GC_MAJOR);
+    });
+
+    it('falls back to entry.kind for older Node entries', function () {
+      const entry = { kind: NODE_PERFORMANCE_GC_MINOR };
+      expect(collector._getGcKind(entry)).to.equal(NODE_PERFORMANCE_GC_MINOR);
+    });
+  });
+
+  // ==========================================
+  // _processGcEntry
+  // ==========================================
+  describe('_processGcEntry', function () {
+
+    it('accumulates pause time using numeric GC kinds from entry.detail', function () {
+      collector.gcStats = { count: 0, totalDuration: 0, totalPauseTime: 0 };
+
+      collector._processGcEntry({ duration: 10, detail: { kind: NODE_PERFORMANCE_GC_MAJOR } });
+      collector._processGcEntry({ duration: 8, detail: { kind: NODE_PERFORMANCE_GC_MINOR } });
+      collector._processGcEntry({ duration: 6, detail: { kind: NODE_PERFORMANCE_GC_INCREMENTAL } });
+      collector._processGcEntry({ duration: 4, detail: { kind: 99 } });
+
+      expect(collector.gcStats.count).to.equal(4);
+      expect(collector.gcStats.totalDuration).to.equal(28);
+      expect(collector.gcStats.totalPauseTime).to.equal(10 + 8 + (6 * 0.15) + (4 * 0.5));
     });
   });
 

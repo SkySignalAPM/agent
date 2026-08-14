@@ -1,6 +1,10 @@
 
 # Changelog
 
+### v1.1.1 (GC Deprecation Fix)
+
+- **Fix Node DEP0152 deprecation warning in GC monitoring** - `SystemMetricsCollector._startGCMonitoring()` now reads GC kind from `entry.detail.kind` (with fallback to `entry.kind` for older Node versions) instead of the deprecated `entry.kind` accessor. Also fixes GC pause-time accounting: kinds are numeric constants (`NODE_PERFORMANCE_GC_MAJOR`, etc.), not string labels like `'major'` / `'minor'`.
+
 ### v1.1.0 (Mergebox RAM Residency Collector)
 
 - **New `MergeboxCollector`** - Measures Meteor's MERGEBOX RAM residency (the per-session, server-side cache of published documents) and posts per-(publication, collection) rollups to `POST /api/v1/metrics/mergebox`. The collector walks `Meteor.server.sessions` read-only, estimates the resident bytes each session's mergebox holds per published collection (sizing each `SessionDocumentView.dataByKey` field value directly), reads the publication strategy via `Meteor.server.getPublicationStrategy()` (reverse-mapped to all four Meteor strategies — `SERVER_MERGE` / `NO_MERGE` / `NO_MERGE_NO_HISTORY` / `NO_MERGE_MULTI`; `unknown` only when the strategy genuinely can't be read), and attributes residency to subscriptions via a pure even-split across `existsIn`. The even-split is sum-preserving: the rows for a collection sum back to that collection's true residency. `connectionCount` is a count of distinct DDP sessions (never a list of connection ids).
