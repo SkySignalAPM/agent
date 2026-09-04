@@ -9,6 +9,7 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
 import DDPCollector from '../../../lib/collectors/DDPCollector.js';
+import { createMockSession } from '../../helpers/sessionMock.js';
 
 describe('DDPCollector', function () {
 
@@ -307,6 +308,103 @@ describe('DDPCollector', function () {
       collector._handleConnectionClose('unknown');
       expect(mockClient.sendDDPConnections.called).to.be.false;
     });
+
+    // Issue #23: browsers drop the socket without sending unsub, and Meteor
+    // deliberately sends no nosub on session teardown, so close is the only
+    // signal that a connection's subscriptions are gone.
+    it('marks the closed connection\'s active subscriptions as stopped', function () {
+      collector.subscriptions.set('sub1', {
+        subscriptionId: 'sub1', connectionId: 'conn1', status: 'ready',
+        previousStatus: 'pending', stoppedAt: null, lastActivityAt: 0,
+        _transitionedThisWindow: null, _wasStoppedThisWindow: false
+      });
+      collector.subscriptions.set('sub2', {
+        subscriptionId: 'sub2', connectionId: 'conn1', status: 'pending',
+        previousStatus: null, stoppedAt: null, lastActivityAt: 0,
+        _transitionedThisWindow: 'pending', _wasStoppedThisWindow: false
+      });
+      collector.subscriptions.set('sub3', {
+        subscriptionId: 'sub3', connectionId: 'conn2', status: 'ready',
+        previousStatus: 'pending', stoppedAt: null, lastActivityAt: 0,
+        _transitionedThisWindow: null, _wasStoppedThisWindow: false
+      });
+
+      collector._handleConnectionClose('conn1');
+
+      for (const id of ['sub1', 'sub2']) {
+        const sub = collector.subscriptions.get(id);
+        expect(sub.status, id).to.equal('stopped');
+        expect(sub.stoppedAt, id).to.be.a('number');
+        expect(sub.lastActivityAt, id).to.equal(sub.stoppedAt);
+        expect(sub._transitionedThisWindow, id).to.equal('stopped');
+        expect(sub._wasStoppedThisWindow, id).to.be.true;
+      }
+      expect(collector.subscriptions.get('sub1').previousStatus).to.equal('ready');
+      expect(collector.subscriptions.get('sub2').previousStatus).to.equal('pending');
+
+      // Subscriptions on other connections are untouched
+      const other = collector.subscriptions.get('sub3');
+      expect(other.status).to.equal('ready');
+      expect(other.stoppedAt).to.be.null;
+    });
+
+    it('leaves already stopped or errored subscriptions untouched on close', function () {
+      const earlier = Date.now() - 5000;
+      collector.subscriptions.set('sub1', {
+        subscriptionId: 'sub1', connectionId: 'conn1', status: 'error',
+        previousStatus: 'pending', stoppedAt: earlier, errorMessage: 'boom',
+        _transitionedThisWindow: 'error', _wasStoppedThisWindow: true
+      });
+      collector.subscriptions.set('sub2', {
+        subscriptionId: 'sub2', connectionId: 'conn1', status: 'stopped',
+        previousStatus: 'ready', stoppedAt: earlier,
+        _transitionedThisWindow: 'stopped', _wasStoppedThisWindow: true
+      });
+
+      collector._handleConnectionClose('conn1');
+
+      expect(collector.subscriptions.get('sub1').status).to.equal('error');
+      expect(collector.subscriptions.get('sub1').stoppedAt).to.equal(earlier);
+      expect(collector.subscriptions.get('sub2').status).to.equal('stopped');
+      expect(collector.subscriptions.get('sub2').stoppedAt).to.equal(earlier);
+    });
+
+    it('reports a disconnected client\'s subscriptions as stopped, then reaps them, without any unsub', function () {
+      const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+      try {
+        collector.wrappedSessions = new Set();
+        const session = createMockSession('conn1');
+        session.send = () => {}; // real sessions have send(); the shared mock does not
+        collector._wrapSession(session);
+
+        session.processMessage({ msg: 'sub', id: 'sub1', name: 'posts', params: [] });
+        session.processMessage({ msg: 'sub', id: 'sub2', name: 'comments', params: ['x'] });
+        session.send(JSON.stringify({ msg: 'ready', subs: ['sub1', 'sub2'] }));
+
+        collector._sendSubscriptionUpdates();
+        expect(mockClient.sendSubscriptions.firstCall.args[0].map(s => s.status))
+          .to.deep.equal(['ready', 'ready']);
+
+        // Browser drops the socket: Meteor fires onClose but never sends nosub
+        session._simulateClose();
+        expect(collector.connections.has('conn1')).to.be.false;
+
+        // Next flush reports the stopped transition and keeps the records for the TTL
+        clock.tick(30000);
+        collector._sendSubscriptionUpdates();
+        expect(mockClient.sendSubscriptions.callCount).to.equal(2);
+        expect(mockClient.sendSubscriptions.secondCall.args[0].map(s => s.status))
+          .to.deep.equal(['stopped', 'stopped']);
+        expect(collector.subscriptions.size).to.equal(2);
+
+        // Once past the 60s TTL they are reaped
+        clock.tick(31000);
+        collector._sendSubscriptionUpdates();
+        expect(collector.subscriptions.size).to.equal(0);
+      } finally {
+        clock.restore();
+      }
+    });
   });
 
   // ==========================================
@@ -317,6 +415,17 @@ describe('DDPCollector', function () {
     it('does nothing when no connections', function () {
       collector._sendUpdates();
       expect(mockClient.sendDDPConnections.called).to.be.false;
+    });
+
+    it('still reaps stale stopped subscriptions when there are no connections', function () {
+      collector.subscriptions.set('sub1', {
+        subscriptionId: 'sub1', status: 'stopped', stoppedAt: Date.now() - 120000
+      });
+
+      collector._sendUpdates();
+
+      expect(mockClient.sendDDPConnections.called).to.be.false;
+      expect(collector.subscriptions.has('sub1')).to.be.false;
     });
 
     it('sends connection data and includes appVersion/buildHash', function () {

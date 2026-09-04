@@ -473,6 +473,44 @@ describe('DDPQueueCollector', function () {
 
       expect(collector.wrappedSessions.has('cleanup-session')).to.be.false;
     });
+
+    // Issue #23: only MethodTracer consumes _skySignalWaitTimeBySession, and
+    // only when a method runs. A session whose last queued message was a sub
+    // leaves its record (and the cached wait-list objects it holds) behind
+    // forever unless close clears it.
+    it('clears the session\'s parked wait-time record on close', function () {
+      delete global._skySignalWaitTimeBySession;
+      const session = createMockSession('closing-session');
+      const other = createMockSession('other-session');
+      collector.wrappedSessions = new Set();
+      collector._wrapSession(session);
+      collector._wrapSession(other);
+
+      // Two subs arrive on the closing session; the second waits on the first.
+      const first = { msg: 'sub', id: 'sub-1', name: 'posts', params: [] };
+      const second = { msg: 'sub', id: 'sub-2', name: 'comments', params: [] };
+      session.processMessage(first);
+      session.inQueue.push(first);
+      session.processMessage(second);
+      session.inQueue.push(second);
+      session.inQueue.shift();
+      session.protocol_handlers.sub.call(session, first, () => {});
+      session.inQueue.shift();
+      session.protocol_handlers.sub.call(session, second, () => {});
+
+      // One sub on a session that stays open
+      const otherMsg = { msg: 'sub', id: 'sub-3', name: 'posts', params: [] };
+      other.processMessage(otherMsg);
+      other.protocol_handlers.sub.call(other, otherMsg, () => {});
+
+      expect(global._skySignalWaitTimeBySession['closing-session'].ddpWaitList).to.have.lengthOf(1);
+      expect(global._skySignalWaitTimeBySession['other-session']).to.exist;
+
+      session._simulateClose();
+
+      expect(global._skySignalWaitTimeBySession['closing-session']).to.be.undefined;
+      expect(global._skySignalWaitTimeBySession['other-session']).to.exist;
+    });
   });
 
   describe('registerMessage / buildWaitList', function () {

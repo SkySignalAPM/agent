@@ -1,5 +1,6 @@
 .vscode
 .npm
 .versions
+.claude
 node_modules
 package-lock.json

@@ -1,6 +1,11 @@
 
 # Changelog
 
+### v1.1.2 (DDP Disconnect Leak Fixes)
+
+- **Fix `DDPCollector` subscription records leaking after DDP disconnect** - Browsers usually drop the WebSocket without sending `unsub`, and Meteor's session teardown deliberately sends no `nosub`, so subscription records for closed connections stayed `ready` forever (one production report showed +122k records over 48h). `_handleConnectionClose()` now treats close as an implicit `unsub` for every subscription on that connection: each record transitions to `stopped` (reported once to the platform on the next flush, in both aggregate and per-entity modes) and is then removed by the existing 60s TTL reaper. Also fixes `_sendUpdates()` skipping subscription cleanup entirely when there were no live connections. (fixes [#23](https://github.com/SkySignalAPM/agent/issues/23))
+- **Fix `DDPQueueCollector` retaining cached wait-list objects per closed session** - `_recordDDPWaitTime()` parks each session's last `ddpWaitList` in `global._skySignalWaitTimeBySession`, but only `MethodTracer` consumed it (and only when a method ran), so a session whose last queued message was a `sub` kept its record after closing. The session `onClose` handler now deletes it. The 5000-entry `messageCache` cap was verified to hold; the retention path was this global. (fixes [#23](https://github.com/SkySignalAPM/agent/issues/23))
+
 ### v1.1.1 (GC Deprecation Fix)
 
 - **Fix Node DEP0152 deprecation warning in GC monitoring** - `SystemMetricsCollector._startGCMonitoring()` now reads GC kind from `entry.detail.kind` (with fallback to `entry.kind` for older Node versions) instead of the deprecated `entry.kind` accessor. Also fixes GC pause-time accounting: kinds are numeric constants (`NODE_PERFORMANCE_GC_MAJOR`, etc.), not string labels like `'major'` / `'minor'`.
