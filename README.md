@@ -418,11 +418,23 @@ Meteor reactive query tracking with per-observer driver detection:
 
 ### Background Job Monitoring
 
-Track `msavin:sjobs` (Steve Jobs) and other job packages:
+Track `msavin:sjobs` (Steve Jobs), BullMQ, and `quave:synced-cron`:
 - Job execution times and status
 - Queue length and worker utilization
 - Failed job tracking with error details
 - Job type categorization
+
+`quave:synced-cron` is detected automatically when installed. Each actual job
+callback execution appears in the existing Jobs traces and analytics, including
+async completion, duration, failures, and sanitized results. Runs skipped by the
+scheduler's synchronization or parallel-execution checks are not reported.
+Jobs with `persist: false` are supported; no cron-history polling is required.
+
+The agent selects one job package. If your app installs multiple supported job
+packages, set `jobsPackage: "quave:synced-cron"` in your SkySignal agent
+configuration to select this adapter. Cron statistics describe this host's
+executions; recurring job definitions are not counted as queued work. Monitoring
+starts when the agent starts and does not backfill historical executions.
 
 ### DNS Timing
 

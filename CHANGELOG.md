@@ -1,6 +1,12 @@
 
 # Changelog
 
+### v1.2.0 (Synced Cron Job Monitoring)
+
+- **Add `quave:synced-cron` support** - Automatically detect the optional scheduler and report actual job executions through the existing job traces and analytics, including duration, async completion, failures, sanitized results, and originating method trace correlation. Jobs with `persist: false` are supported.
+- **Preserve scheduler behavior** - Runs skipped by synchronization or parallel-execution checks produce no job events. Monitoring preserves callback arguments, results, and errors, handles concurrent executions and stop/restart cleanup, and isolates telemetry failures from job execution.
+- **Package selection** - The agent continues to select one job adapter. Apps with multiple supported job packages can select synced-cron with `jobsPackage: "quave:synced-cron"`. Historical executions are not backfilled.
+
 ### v1.1.2 (DDP Disconnect Leak Fixes)
 
 - **Fix `DDPCollector` subscription records leaking after DDP disconnect** - Browsers usually drop the WebSocket without sending `unsub`, and Meteor's session teardown deliberately sends no `nosub`, so subscription records for closed connections stayed `ready` forever (one production report showed +122k records over 48h). `_handleConnectionClose()` now treats close as an implicit `unsub` for every subscription on that connection: each record transitions to `stopped` (reported once to the platform on the next flush, in both aggregate and per-entity modes) and is then removed by the existing 60s TTL reaper. Also fixes `_sendUpdates()` skipping subscription cleanup entirely when there were no live connections. (fixes [#23](https://github.com/SkySignalAPM/agent/issues/23))
