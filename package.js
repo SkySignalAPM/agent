@@ -14,7 +14,7 @@ Package.onUse(function (api) {
   // Core dependencies - versions will be resolved based on the host app's Meteor version
   api.use(["ecmascript", "fetch", "check", "mongo", "ddp", "accounts-base"]);
   // Load the optional scheduler before detecting its exported runtime object.
-  api.use("quave:synced-cron", "server", { weak: true });
+  api.use("quave:synced-cron@2.4.0", "server", { weak: true });
 
   // Server-side entry point
   api.mainModule("skysignal-agent.js", "server");
