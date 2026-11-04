@@ -339,8 +339,13 @@ Client-side error tracking is configured in `Meteor.settings.public.skysignal.er
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `errorTracking.enabled` | Boolean | `true` | Enable client-side error capture |
+| `errorTracking.attachScreenshots` | Boolean | `false` | Attach a screenshot with sensitive elements redacted |
 | `errorTracking.captureUnhandledRejections` | Boolean | `true` | Capture unhandled Promise rejections |
 | `errorTracking.debug` | Boolean | `false` | Log error tracker activity to the browser console |
+
+The screenshot renderer (`html2canvas`) loads on demand after an error passes the screenshot sampling and type filters. Keeping screenshots disabled does not download or evaluate the renderer through the agent. Enabling screenshots alone does not load it either; Meteor caches the module after the first eligible capture.
+
+The first capture and its error submission wait for the renderer download before redaction and capture begin. If loading fails, the error is sent without a screenshot. There is no additional download timeout; a request that never settles can delay that error submission. Screenshot quality, size limits, redaction, and configuration defaults are unchanged.
 
 ## What Gets Monitored
 

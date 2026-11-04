@@ -1,13 +1,16 @@
 /**
  * ScreenshotCapture tests — constructor defaults, default redaction selectors,
- * _shouldCapture sampling, _shouldCaptureErrorType filtering, getStats.
+ * sampling/filtering, lazy loading, redaction, encoding, and statistics.
  *
- * Does NOT capture real screenshots — tests internal logic only.
+ * Browser rendering is mocked; the asynchronous capture flow is real.
  */
 
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { execFileSync } from 'child_process';
+import path from 'path';
 import ScreenshotCapture from '../../../client/ScreenshotCapture.js';
+import { setupScreenshotFixture } from '../../helpers/screenshotFixture.js';
 
 describe('ScreenshotCapture', function () {
 
@@ -15,6 +18,125 @@ describe('ScreenshotCapture', function () {
 
   beforeEach(function () {
     capture = new ScreenshotCapture();
+  });
+
+  it('does not evaluate html2canvas when imported or constructed', function () {
+    // A fresh process avoids another test's previously loaded module cache.
+    const output = execFileSync(process.execPath, ['-e', `
+      require('./tests/setup.js');
+      const Capture = require('./client/ScreenshotCapture.js').default;
+      new Capture();
+      const renderer = require.resolve('./tests/helpers/html2canvasMock.js');
+      process.stdout.write(JSON.stringify(Boolean(require.cache[renderer])));
+    `], { cwd: path.resolve(__dirname, '../../..'), encoding: 'utf8' });
+    expect(JSON.parse(output)).to.equal(false);
+  });
+
+  describe('lazy capture', function () {
+    let fixture;
+    let load;
+
+    beforeEach(function () {
+      fixture = setupScreenshotFixture();
+      capture = new ScreenshotCapture({ redactSelectors: ['.secret'], quality: 0.5, maxSize: 256 });
+      // Assigning this boundary also lets the tests expose the old eager path.
+      load = capture._loadHtml2Canvas = sinon.stub().resolves(fixture.renderer);
+    });
+
+    afterEach(function () {
+      fixture.restore();
+    });
+
+    for (const reason of ['disabled', 'sampling', 'error type']) {
+      it(`does not load or redact when rejected by ${reason}`, async function () {
+        if (reason === 'disabled') capture.config.enabled = false;
+        if (reason === 'sampling') {
+          capture.config.samplingRate = 25;
+          sinon.stub(Math, 'random').returns(0.5);
+        }
+        if (reason === 'error type') capture.config.screenshotOnErrorTypes = ['FatalError'];
+        expect(await capture.capture({ type: 'TypeError' })).to.equal(null);
+        expect(load.called).to.equal(false);
+        expect(fixture.overlays).to.have.length(0);
+      });
+    }
+
+    it('waits for the renderer before redacting and preserves the render delay', async function () {
+      let resolveLoad;
+      load.returns(new Promise(resolve => { resolveLoad = resolve; }));
+      const result = capture.capture({ type: 'TypeError' });
+      await fixture.clock.tickAsync(1000);
+      expect(fixture.overlays).to.have.length(0);
+      expect(fixture.renderer.called).to.equal(false);
+      resolveLoad(fixture.renderer);
+      await fixture.clock.tickAsync(0);
+      expect(fixture.activeOverlays.size).to.equal(1);
+      await fixture.clock.tickAsync(49);
+      expect(fixture.renderer.called).to.equal(false);
+      await fixture.clock.tickAsync(1);
+      expect(await result).to.equal('data:image/jpeg;base64,capture');
+      expect(fixture.activeOverlays.size).to.equal(0);
+    });
+
+    it('preserves rendering options, JPEG quality, redaction, and success counts', async function () {
+      const result = capture.capture({ type: 'TypeError' });
+      await fixture.clock.tickAsync(50);
+      expect(await result).to.equal('data:image/jpeg;base64,capture');
+      expect(fixture.renderer.calledOnceWithExactly(fixture.document.body, {
+        useCORS: true, allowTaint: false, logging: false, scale: 1
+      })).to.equal(true);
+      expect(fixture.canvas.toBlob.firstCall.args.slice(1)).to.deep.equal(['image/jpeg', 0.5]);
+      expect(fixture.overlays[0].style.backgroundColor).to.equal('#000');
+      expect(fixture.overlays[0].remove.calledOnce).to.equal(true);
+      expect(capture.getStats()).to.include({ totalErrors: 1, screenshotsCaptured: 1 });
+    });
+
+    for (const failure of ['null blob', 'oversized blob', 'render rejection', 'reader error']) {
+      it(`returns null and removes overlays for ${failure}`, async function () {
+        if (failure === 'null blob') fixture.canvas.toBlob.callsFake(callback => callback(null));
+        if (failure === 'oversized blob') fixture.blob.size = 257;
+        if (failure === 'render rejection') fixture.renderer.rejects(new Error('render failed'));
+        if (failure === 'reader error') sinon.stub(global.FileReader.prototype, 'readAsDataURL').callsFake(function () { this.onerror(); });
+        const result = capture.capture({ type: 'TypeError' });
+        await fixture.clock.tickAsync(50);
+        expect(await result).to.equal(null);
+        expect(fixture.activeOverlays.size).to.equal(0);
+        expect(fixture.overlays[0].remove.calledOnce).to.equal(true);
+        expect(capture.screenshotCount).to.equal(0);
+      });
+    }
+
+    it('allows a later capture after load rejection without creating overlays for the failure', async function () {
+      load.onFirstCall().rejects(new Error('download failed'));
+      const first = capture.capture({ type: 'TypeError' });
+      await fixture.clock.tickAsync(50);
+      expect(await first).to.equal(null);
+      expect(fixture.overlays).to.have.length(0);
+      const second = capture.capture({ type: 'TypeError' });
+      await fixture.clock.tickAsync(50);
+      expect(await second).to.equal('data:image/jpeg;base64,capture');
+      expect(capture.screenshotCount).to.equal(1);
+    });
+
+    it('keeps overlapping capture results and overlay cleanup independent', async function () {
+      fixture.renderer.onFirstCall().resolves({ toBlob: callback => callback({ size: 10, dataURL: 'first' }) });
+      fixture.renderer.onSecondCall().resolves({ toBlob: callback => callback({ size: 10, dataURL: 'second' }) });
+      const results = [capture.capture({ type: 'TypeError' }), capture.capture({ type: 'ReferenceError' })];
+      await fixture.clock.tickAsync(50);
+      expect(await Promise.all(results)).to.deep.equal(['first', 'second']);
+      expect(capture.screenshotCount).to.equal(2);
+      expect(fixture.overlays).to.have.length(2);
+      expect(fixture.overlays.every(overlay => overlay.remove.calledOnce)).to.equal(true);
+      expect(fixture.activeOverlays.size).to.equal(0);
+    });
+
+    it('resolves the real dynamic import default export and encodes its canvas', async function () {
+      delete capture._loadHtml2Canvas;
+      const result = capture.capture({ type: 'TypeError' });
+      await fixture.clock.tickAsync(50);
+      expect(await result).to.equal('data:image/jpeg;base64,mock');
+      expect(capture.screenshotCount).to.equal(1);
+    });
   });
 
   // ==========================================

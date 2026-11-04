@@ -11,8 +11,6 @@
  * - Element-level privacy controls
  */
 
-import html2canvas from 'html2canvas';
-
 export default class ScreenshotCapture {
 	constructor(config = {}) {
 		this.config = {
@@ -307,10 +305,18 @@ export default class ScreenshotCapture {
 	}
 
 	/**
-	 * Capture screenshot using html2canvas
+	 * Load the renderer only for an eligible capture. Meteor caches the module.
+	 */
+	async _loadHtml2Canvas() {
+		const { default: html2canvas } = await import('html2canvas');
+		return html2canvas;
+	}
+
+	/**
+	 * Capture screenshot using the loaded html2canvas renderer
 	 * Returns base64 data URL or null if capture fails
 	 */
-	async _captureScreenshot() {
+	async _captureScreenshot(html2canvas) {
 		try {
 			// Capture screenshot
 			const canvas = await html2canvas(document.body, {
@@ -392,6 +398,9 @@ export default class ScreenshotCapture {
 		let redactionOverlays = [];
 
 		try {
+			// Finish any download before overlays cover the page.
+			const html2canvas = await this._loadHtml2Canvas();
+
 			// Redact sensitive elements
 			redactionOverlays = this._redactSensitiveElements();
 
@@ -406,7 +415,7 @@ export default class ScreenshotCapture {
 			await new Promise(resolve => setTimeout(resolve, 50));
 
 			// Capture screenshot
-			const screenshot = await this._captureScreenshot();
+			const screenshot = await this._captureScreenshot(html2canvas);
 
 			// Remove overlays
 			this._removeRedactionOverlays(redactionOverlays);

@@ -1,6 +1,10 @@
 
 # Changelog
 
+### v1.2.1 (Lazy Screenshot Loading)
+
+- **Load the screenshot renderer on demand** - Move `html2canvas` out of the agent's initial client bundle and fetch it only for an eligible screenshot capture. Disabled screenshots do not load the renderer. Loading completes before redaction overlays appear; rejected downloads preserve the original error report without a screenshot. The first capture/error submission waits for the download, and later captures reuse Meteor's module cache. Add regression coverage for lazy loading, capture failures, redaction cleanup, and error delivery. (fixes [#24](https://github.com/SkySignalAPM/agent/issues/24))
+
 ### v1.2.0 (Synced Cron Job Monitoring)
 
 - **Add `quave:synced-cron` support** - Automatically detect the optional scheduler and report actual job executions through the existing job traces and analytics, including duration, async completion, failures, sanitized results, and originating method trace correlation. Jobs with `persist: false` are supported.

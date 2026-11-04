@@ -3,7 +3,8 @@
  */
 function html2canvas() {
   return Promise.resolve({
-    toDataURL: () => 'data:image/png;base64,mock'
+    toDataURL: () => 'data:image/png;base64,mock',
+    toBlob: callback => callback({ size: 128, dataURL: 'data:image/jpeg;base64,mock' })
   });
 }
 
