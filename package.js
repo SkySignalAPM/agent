@@ -1,6 +1,6 @@
 Package.describe({
   name: "skysignal:agent",
-  version: "1.2.0",
+  version: "1.2.1",
   summary:
     "SkySignal APM agent for Meteor applications - monitors performance, errors, and system metrics",
   git: "https://github.com/skysignalapm/agent.git",
@@ -13,6 +13,8 @@ Package.onUse(function (api) {
 
   // Core dependencies - versions will be resolved based on the host app's Meteor version
   api.use(["ecmascript", "fetch", "check", "mongo", "ddp", "accounts-base"]);
+  // Runtime loading and server delivery for the optional screenshot renderer.
+  api.use("dynamic-import");
   // Load the optional scheduler before detecting its exported runtime object.
   api.use("quave:synced-cron@2.4.0", "server", { weak: true });
 

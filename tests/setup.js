@@ -7,6 +7,8 @@
  * IMPORTANT: Babel config is inlined here (not in .babelrc) so that
  * Meteor's build system does not pick up the test-only module aliases
  * when building the package for real applications.
+ * tests/package.json keeps Mocha on this CommonJS/Babel path instead of
+ * native ESM loading, which would bypass these aliases for dynamic imports.
  */
 
 require('@babel/register')({

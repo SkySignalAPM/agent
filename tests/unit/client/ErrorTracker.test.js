@@ -9,6 +9,8 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { setupBrowserMocks, teardownBrowserMocks } from '../../helpers/browserMock.js';
 import ErrorTracker from '../../../client/ErrorTracker.js';
+import ScreenshotCapture from '../../../client/ScreenshotCapture.js';
+import { setupScreenshotFixture } from '../../helpers/screenshotFixture.js';
 
 describe('ErrorTracker', function () {
 
@@ -18,6 +20,77 @@ describe('ErrorTracker', function () {
 
   after(function () {
     teardownBrowserMocks();
+  });
+
+  describe('lazy screenshot integration', function () {
+    let tracker;
+    let fixture;
+    let load;
+    const error = { type: 'TypeError', message: 'original failure', stack: 'TypeError: original failure\n at app.js:1' };
+
+    beforeEach(function () {
+      fixture = setupScreenshotFixture();
+      tracker = new ErrorTracker({ publicKey: 'pk_test', attachScreenshots: true });
+      // Bypass the ErrorTracker import alias so the real capture error boundary runs.
+      tracker.screenshotCapture = new ScreenshotCapture({ redactSelectors: ['.secret'] });
+      load = tracker.screenshotCapture._loadHtml2Canvas = sinon.stub().resolves(fixture.renderer);
+      sinon.stub(tracker, '_sendError').resolves();
+    });
+
+    afterEach(function () {
+      fixture.restore();
+    });
+
+    for (const config of [{}, { attachScreenshots: false }]) {
+      it(`sends without screenshots when ${Object.keys(config).length ? 'explicitly disabled' : 'using defaults'}`, async function () {
+        const disabled = new ErrorTracker({ publicKey: 'pk_test', ...config });
+        sinon.stub(disabled, '_sendError').resolves();
+        expect(disabled.screenshotCapture).to.equal(null);
+        await disabled._handleError(error);
+        expect(disabled._sendError.firstCall.args[0]).to.include({ ...error, screenshot: null });
+      });
+    }
+
+    it('sends the original error and clears deduplication state after download rejection', async function () {
+      load.rejects(new Error('download failed'));
+      const result = tracker._handleError(error);
+      await fixture.clock.tickAsync(50);
+      await result;
+      expect(tracker._sendError.calledOnce).to.equal(true);
+      expect(tracker._sendError.firstCall.args[0]).to.include({ ...error, screenshot: null });
+      expect(tracker.pendingErrors.size).to.equal(0);
+      expect(fixture.overlays).to.have.length(0);
+    });
+
+    it('attaches a successful screenshot before running beforeSend', async function () {
+      tracker.config.beforeSend = sinon.spy(payload => ({ ...payload, reviewed: true }));
+      const result = tracker._handleError(error);
+      await fixture.clock.tickAsync(50);
+      await result;
+      expect(tracker.config.beforeSend.firstCall.args[0].screenshot).to.equal('data:image/jpeg;base64,capture');
+      expect(tracker._sendError.firstCall.args[0]).to.include({ screenshot: 'data:image/jpeg;base64,capture', reviewed: true });
+    });
+
+    it('never loads for ignored errors', async function () {
+      tracker.config.ignoreErrors = ['original failure'];
+      await tracker._handleError(error);
+      expect(load.called).to.equal(false);
+      expect(tracker._sendError.called).to.equal(false);
+    });
+
+    it('deduplicates identical errors while the renderer is loading', async function () {
+      let resolveLoad;
+      load.returns(new Promise(resolve => { resolveLoad = resolve; }));
+      const first = tracker._handleError(error);
+      await tracker._handleError({ ...error });
+      expect(load.calledOnce).to.equal(true);
+      expect(tracker._sendError.called).to.equal(false);
+      resolveLoad(fixture.renderer);
+      await fixture.clock.tickAsync(50);
+      await first;
+      expect(tracker._sendError.calledOnce).to.equal(true);
+      expect(tracker.pendingErrors.size).to.equal(0);
+    });
   });
 
   describe('constructor', function () {
