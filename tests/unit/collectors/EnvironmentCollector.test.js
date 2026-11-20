@@ -163,4 +163,26 @@ describe('EnvironmentCollector', function () {
       expect(collector.intervalId).to.be.null;
     });
   });
+  describe('dependency specs', function () {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const sinon = require('sinon');
+
+    it('strips credentials from URL dependency specs', async function () {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-env-'));
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+        dependencies: { priv: 'git+https://ghp_SECRET@github.com/org/priv.git', lodash: '^4.17.21' }
+      }));
+      sinon.stub(process, 'cwd').returns(dir);
+      try {
+        const versions = await collector._getPackageVersions();
+        expect(versions['dep:priv']).to.equal('git+https://github.com/org/priv.git');
+        expect(versions['dep:lodash']).to.equal('^4.17.21');
+      } finally {
+        process.cwd.restore();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

@@ -163,4 +163,16 @@ describe('DeprecatedApiCollector', function () {
       expect(collector.intervalId).to.be.null;
     });
   });
+  describe('dotted collection names', function () {
+
+    it('keeps the full collection name when it contains dots', function () {
+      const client = { addDeprecatedApiMetric: () => {} };
+      const c = new DeprecatedApiCollector({ client });
+      let metric;
+      client.addDeprecatedApiMetric = (m) => { metric = m; };
+      c._increment('app.jobs', 'findOne', 'sync');
+      c._collect();
+      expect(metric.syncCalls[0]).to.include({ collection: 'app.jobs', method: 'findOne', count: 1 });
+    });
+  });
 });

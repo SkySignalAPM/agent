@@ -1,6 +1,65 @@
 
 # Changelog
 
+### v1.3.0 (Meteor Instrumentation Support + Coverage Fixes)
+
+- **Meteor 3.6 `instrumentation` support** - When the app has `meteor add instrumentation`, `MethodTracer` subscribes to `method.start/end/error`. The agent detects the package at runtime, so apps without it, or with `METEOR_INSTRUMENTATION_DISABLED=1`, are unaffected.
+  - Method traces gain `responseTime`, measured from invocation start until the result is sent, including the write-fence wait. The handler wrapper still owns DB/HTTP operation attribution.
+  - Invocations whose handler never ran (e.g. rejected by `DDPRateLimiter`) are reported as timing-only traces with `source: "instrumentation"`. They are capped at 100 per minute, so a client hammering a rate-limited method can't flood telemetry.
+  - `DDPCollector` uses `publication.error` to record the original server error on failed subscriptions. Previously it recorded only the sanitized `500: Internal server error` the client receives.
+  - The agent never calls `Instrumentation.configure()`.
+- **Trace methods registered before `start()`** - `MethodTracer` only wrapped methods registered through `Meteor.methods` *after* the agent started. It missed accounts methods (`login`, ...), app methods imported earlier, and anything registered via `Meteor.server.methods` (`Meteor.methods` is a bound copy). It now wraps `Meteor.server.method_handlers` directly and re-sweeps after every registration.
+- **Redact accounts method args/results** - `login`, `createUser`, `resetPassword`, `verifyEmail`, 2FA and passwordless methods never ship args, nested-call results, or the selectors/arguments of their DB operations (timings are kept). The list mirrors Meteor's own instrumentation denylist.
+- **Fix parent/child method linkage under concurrency** - Caller/parent detection used one process-global call stack, so concurrent methods from different clients were linked as parent/child and popped each other's entries. It now uses the async context. Only server-side calls (no write fence) can have a parent, and `this.unblock()` exits the method's async context so the session's next queued message is not attributed to it.
+- **Trace publications registered before `start()`** - `PublicationTracer` now wraps `Meteor.server.publish_handlers` / `universal_publish_handlers`. This covers early registrations, the object form `Meteor.publish({...})`, and `Meteor.server.publish`. Async publish handlers (the norm in Meteor 3) are now analyzed for missing projections and limits; previously their returned Promise was never inspected.
+- **`DDPCollector` connection and subscription fixes**:
+  - Sessions are wrapped on `Meteor.onConnection` instead of waiting up to 5s for the poll. The poll had missed each connection's initial `sub` messages and short-lived sessions entirely. Wrapping is now idempotent.
+  - `nosub` without an error (server called `this.stop()`) is a normal stop, not an "Unknown error".
+  - `added`/`changed`/`removed` messages are credited only to ready subscriptions on the same connection, instead of every ready subscription on the server.
+
+#### Privacy & security
+- **Typed input values are no longer sent** - User-action tracking recorded the first 50 characters of an input's value (including passwords). Form controls now record no text.
+- **No secrets in URLs** - Browser page/referrer/resource/form-action URLs, server HTTP paths and referrers, and outbound HTTP/fetch URLs are reduced to origin + path. Query strings, fragments (e.g. `/#/reset-password/<token>`) and `user:pass@` are dropped. Credentials are stripped from `package.json` dependency specs.
+- **Login-token hashes no longer leak via live queries** - Live-query selectors are redacted at every depth, which covers accounts-base's `services.resume.loginTokens.hashedToken` observers. Keys matching the sensitive-key list (`token`, `auth`, `session`, ...) are redacted.
+- **`traceMethodArguments: false` and `collectErrors: false` now work** - Both were documented but never passed to the method tracer.
+- **Screenshot redaction** - `redactSelectors` now adds to the built-in list instead of replacing it, and `screenshotSamplingRate: 0` disables screenshots instead of meaning 100%.
+
+#### Host-app safety
+- **SIGTERM/SIGINT no longer block process exit** - The agent's signal handler re-raises the signal after a capped final flush when the app has no handler of its own.
+- **Cursor `fetch()`/`count()` stay synchronous** - Only `fetchAsync`/`countAsync` are wrapped, and only inside methods. Server-side local collections no longer break.
+- **CPU profiler can no longer crash the process** when the agent stops mid-profile.
+- **BullMQ job payloads are no longer modified** - Trace correlation uses a job-id map, so it only works in the container that queued the job. Redis queue discovery scans at most every 5 minutes.
+- **`util.promisify(dns.lookup)` behaves normally** with DNS timing enabled, and the wrappers return the original result.
+- **`configure()` no longer throws** on the documented `buildHash`, `httpSampleRate`, `httpRequestsInterval` and `httpExcludePatterns` options. Removed options (`collectRUM`, `traceMethodOperations`, `useWorkerThread`, `workerThreshold`, `vulnerabilitiesInterval`) are still accepted and ignored.
+- **Logs** - Filtered or sampled-out logs are no longer serialized, and capture errors can't escape `console.*`.
+- **Lighter background work** - Collection stats query one collection at a time. `npm audit` runs once per process instead of hourly, and works on Windows. The Steve Jobs monitor no longer replays finished jobs on restart (pending jobs are still tracked), and its stalled-job query is bounded.
+- **Browser**
+  - SPA route changes no longer leak RUM collectors and listeners.
+  - Client errors are rate-limited: once per minute per error, at most 10 per minute.
+  - The never-retried error queue is gone; `getStats().failedErrors` replaces `queuedErrors`.
+  - Dead-click detection uses `MutationObserver`. The removed `DOMSubtreeModified` event had made every click count as dead.
+
+#### Correct data
+- **Live-query aggregates report per-window deltas** - They previously sent lifetime totals that the platform then summed, so a 1-update/minute observer showed 1830 updates per hour. Old observers are no longer flagged as leak candidates every window. Long-lived observers are still re-sent every 6h so the platform's 24h TTL doesn't drop them before leak detection sees them.
+- **Each async collection call is recorded once** - Async calls were wrapped twice, which doubled DB time and produced false N+1 reports. Mongo/HTTP/fetch/email instrumentation is also applied once per process, so `stop()` then `start()` doesn't double it. After a restart, publication stats go to the new tracer, and the stopped DDP collector's session hooks become pass-throughs.
+- **Pool wait times are no longer counted twice**, and buffer trimming no longer splices on every push.
+- **Shared observers stay active** until the last subscription using them stops.
+- **Query and subscription groups no longer split by `$in` array length.** Group keys change once on upgrade.
+- **Web vitals** - Sent once per page load on page hide, with final CLS/LCP values (CLS 0 included) and flushed on the same hide. Attributed to the landing page; later routes no longer re-report the page-load vitals.
+- **Client errors now carry `appVersion`** - The resolver lived in an unused file.
+- **Smaller fixes**
+  - `indexUsageSampleRate: 0` disables explain sampling.
+  - Live-query P50/P95 use the shared percentile helper.
+  - Deprecated-API stats handle collection names containing dots.
+
+#### Transport
+- **`stop()` then `start()` sends data again**, and `configure()` while running is refused instead of leaving an orphaned client.
+- **Permanent 4xx responses (bad key, validation, too large) are not retried**, and `stats.failed` counts each batch once.
+- **`maxMemoryMB` is enforced** - New batches are dropped when that many MB of requests are in flight or waiting to retry. The keep-alive socket timeout now uses Node's `timeout` option; `freeSocketTimeout` was ignored.
+- **One unserializable item no longer drops its batch** - Examples are a BigInt in log metadata or a shared object mislabelled `[Circular]`.
+- **`batchSize: 0` / `flushInterval: 0` are rejected**, and `DEFAULT_CONFIG` is the single source of defaults. The README defaults were corrected.
+- **Removed dead code**: the unused WorkerPool/compressionWorker, sizeEstimator helpers, `client/error-tracker-client.js` and DDPQueueCollector's no-op restore.
+
 ### v1.2.1 (Lazy Screenshot Loading)
 
 - **Load the screenshot renderer on demand** - Move `html2canvas` out of the agent's initial client bundle and fetch it only for an eligible screenshot capture. Disabled screenshots do not load the renderer. Loading completes before redaction overlays appear; rejected downloads preserve the original error report without a screenshot. The first capture/error submission waits for the download, and later captures reuse Meteor's module cache. Add regression coverage for lazy loading, capture failures, redaction cleanup, and error delivery. (fixes [#24](https://github.com/SkySignalAPM/agent/issues/24))

@@ -6,7 +6,10 @@
  */
 
 import { expect } from 'chai';
+import sinon from 'sinon';
 import MethodTracer from '../../../lib/collectors/MethodTracer.js';
+import MongoPoolCollector from '../../../lib/collectors/MongoPoolCollector.js';
+import DDPQueueCollector from '../../../lib/collectors/DDPQueueCollector.js';
 
 describe('MethodTracer', function () {
 
@@ -489,45 +492,255 @@ describe('MethodTracer', function () {
   });
 
   // ==========================================
-  // _cleanupStaleCallStackEntries
+  // method wrapping, parent linkage and instrumentation
   // ==========================================
-  describe('_cleanupStaleCallStackEntries', function () {
+  describe('method wrapping, parent linkage and instrumentation', function () {
+    const { Meteor } = require('../../helpers/meteorMock.js');
+    let traces;
+    let savedHandlers;
 
-    it('removes entries older than 5 minutes', function () {
-      const now = Date.now();
-      tracer._callStack = [
-        { methodName: 'old', startTime: now - 6 * 60 * 1000, sessionId: 's1' },
-        { methodName: 'recent', startTime: now - 1 * 60 * 1000, sessionId: 's2' }
-      ];
-      tracer._cleanupStaleCallStackEntries();
-      expect(tracer._callStack).to.have.lengthOf(1);
-      expect(tracer._callStack[0].methodName).to.equal('recent');
+    beforeEach(function () {
+      traces = [];
+      tracer.client = { addTrace: (t) => traces.push(t) };
+      savedHandlers = Meteor.server.method_handlers;
     });
 
-    it('keeps all entries when none are stale', function () {
-      const now = Date.now();
-      tracer._callStack = [
-        { methodName: 'a', startTime: now - 1000, sessionId: 's1' },
-        { methodName: 'b', startTime: now - 2000, sessionId: 's2' }
-      ];
-      tracer._cleanupStaleCallStackEntries();
-      expect(tracer._callStack).to.have.lengthOf(2);
+    afterEach(function () {
+      Meteor.server.method_handlers = savedHandlers;
     });
 
-    it('removes all entries when all are stale', function () {
-      const now = Date.now();
-      tracer._callStack = [
-        { methodName: 'a', startTime: now - 10 * 60 * 1000, sessionId: 's1' },
-        { methodName: 'b', startTime: now - 8 * 60 * 1000, sessionId: 's2' }
-      ];
-      tracer._cleanupStaleCallStackEntries();
-      expect(tracer._callStack).to.have.lengthOf(0);
+    // Fake of Meteor's Instrumentation: listeners + a settable "current invocation"
+    function fakeInstrumentation() {
+      const listeners = {};
+      return {
+        current: null,
+        on(type, fn) { listeners[type] = fn; return { stop() { delete listeners[type]; } }; },
+        currentContext() { return { traceId: this.current }; },
+        emit(type, event) { if (listeners[type]) listeners[type]({ type, ...event }); },
+        listeners
+      };
+    }
+
+    it('wraps already-registered handlers idempotently and keeps the original', function () {
+      const original = function () { return 1; };
+      Meteor.server.method_handlers = { early: original };
+      tracer._wrapRegisteredMethods();
+      const wrapped = Meteor.server.method_handlers.early;
+      expect(wrapped).to.not.equal(original);
+      expect(wrapped._skySignalOriginal).to.equal(original);
+      tracer._wrapRegisteredMethods();
+      expect(Meteor.server.method_handlers.early).to.equal(wrapped);
     });
 
-    it('handles empty call stack gracefully', function () {
-      tracer._callStack = [];
-      expect(() => tracer._cleanupStaleCallStackEntries()).to.not.throw();
-      expect(tracer._callStack).to.have.lengthOf(0);
+    it('wraps methods registered later through Meteor.methods and Meteor.server.methods', function () {
+      const server = Meteor.server;
+      const savedMeteorMethods = Meteor.methods;
+      server.method_handlers = {};
+      server.methods = function (defs) { Object.assign(this.method_handlers, defs); };
+      Meteor.methods = server.methods.bind(server); // bound copy, like ddp-server
+      try {
+        tracer._wrapMeteorMethods();
+        Meteor.methods({ viaMeteor() {} });
+        server.methods({ viaServer() {} });
+        expect(server.method_handlers.viaMeteor._skySignalOriginal).to.be.a('function');
+        expect(server.method_handlers.viaServer._skySignalOriginal).to.be.a('function');
+      } finally {
+        Meteor.methods = savedMeteorMethods;
+        delete server.methods;
+      }
+    });
+
+    it('links a server-side nested call to its parent', async function () {
+      Meteor.server.method_handlers = {
+        child: async function () { return 'c'; },
+        parent: async function () {
+          // Server Meteor.callAsync: invocation without a fence
+          return Meteor.server.method_handlers.child.call({});
+        }
+      };
+      tracer._wrapRegisteredMethods();
+      await Meteor.server.method_handlers.parent.call({ fence: {} });
+
+      const child = traces.find((t) => t.methodName === 'child');
+      const parent = traces.find((t) => t.methodName === 'parent');
+      expect(child.parentTraceId).to.equal(parent.traceId);
+      expect(child.callDepth).to.equal(1);
+      expect(parent.operations.some((op) => op.type === 'method' && op.traceId === child.traceId)).to.be.true;
+    });
+
+    it('does not make a client DDP call a child of a concurrent method', async function () {
+      Meteor.server.method_handlers = {
+        b: async function () { return 'b'; },
+        a: async function () {
+          // A client call that happens to start inside a's async context
+          return Meteor.server.method_handlers.b.call({ fence: {} });
+        }
+      };
+      tracer._wrapRegisteredMethods();
+      await Meteor.server.method_handlers.a.call({ fence: {} });
+
+      const b = traces.find((t) => t.methodName === 'b');
+      expect(b.parentTraceId).to.be.undefined;
+      expect(b.callDepth).to.equal(0);
+    });
+
+    it('does not leak method context through this.unblock() into the next queued message', async function () {
+      let nextDone;
+      const next = new Promise((r) => { nextDone = r; });
+      Meteor.server.method_handlers = {
+        queued: async function () { nextDone(); return 'q'; },
+        first: async function () {
+          this.unblock(); // schedules the session's next message
+          await next;
+          return 'f';
+        }
+      };
+      tracer._wrapRegisteredMethods();
+      const invocation = {
+        unblock() {
+          // ddp-server: setImmediate(processNext) → next method, no fence here
+          // to prove the context was exited rather than relying on the fence rule
+          setImmediate(() => Meteor.server.method_handlers.queued.call({}));
+        }
+      };
+      await Meteor.server.method_handlers.first.call(invocation);
+
+      const queued = traces.find((t) => t.methodName === 'queued');
+      expect(queued.parentTraceId).to.be.undefined;
+    });
+
+    it('redacts args and nested results of accounts methods', async function () {
+      Meteor.server.method_handlers = {
+        login: async function () { return { token: 'secret-token' }; },
+        outer: async function () { return Meteor.server.method_handlers.login.call({}, { resume: 'secret' }); }
+      };
+      tracer._wrapRegisteredMethods();
+      await Meteor.server.method_handlers.outer.call({ fence: {} });
+
+      const login = traces.find((t) => t.methodName === 'login');
+      expect(login.args).to.deep.equal({ redacted: true });
+      expect(JSON.stringify(traces)).to.not.include('secret');
+    });
+
+    it('drops DB operation details inside redacted methods but keeps timings', async function () {
+      Meteor.server.method_handlers = {
+        resetPassword: async function () {
+          tracer._currentMethodContext.operations.push({
+            type: 'db', time: 1, duration: 7, collection: 'users',
+            selector: { 'services.password.reset.token': 'secret-reset-token' }
+          });
+          return 'ok';
+        }
+      };
+      tracer._wrapRegisteredMethods();
+      await Meteor.server.method_handlers.resetPassword.call({ fence: {} }, 'secret-reset-token', 'pw');
+
+      expect(JSON.stringify(traces)).to.not.include('secret');
+      const dbOp = traces[0].operations.find((op) => op.type === 'db');
+      expect(dbOp).to.deep.equal({ type: 'db', time: 1, duration: 7 });
+    });
+
+    it('traces once when an external wrapper is re-swept (no double wrap)', async function () {
+      Meteor.server.method_handlers = { m: async function () { return 1; } };
+      tracer._wrapRegisteredMethods();
+      const ours = Meteor.server.method_handlers.m;
+      // e.g. another APM decorates the existing table entry
+      Meteor.server.method_handlers.m = function (...a) { return ours.apply(this, a); };
+      tracer._wrapRegisteredMethods();
+
+      await Meteor.server.method_handlers.m.call({ fence: {} });
+      expect(traces).to.have.lengthOf(1);
+    });
+
+    it('holds the trace until method.end and attaches responseTime', async function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+      Meteor.server.method_handlers = { m: async function () { return 1; } };
+      tracer._wrapRegisteredMethods();
+
+      I.emit('method.start', { traceId: 't1', name: 'm', ts: Date.now() });
+      I.current = 't1';
+      await Meteor.server.method_handlers.m.call({ fence: {} });
+      expect(traces).to.have.lengthOf(0); // held for the end event
+
+      I.emit('method.end', { traceId: 't1', name: 'm', durationMs: 42 });
+      expect(traces).to.have.lengthOf(1);
+      expect(traces[0].responseTime).to.equal(42);
+      expect(tracer._instrPending.size).to.equal(0);
+    });
+
+    it('records a timing-only error trace when the handler never ran (rate limited)', function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+
+      I.emit('method.start', { traceId: 't2', name: 'spam', ts: Date.now(), connectionId: 'c1' });
+      I.emit('method.error', {
+        traceId: 't2', name: 'spam', durationMs: 3, connectionId: 'c1',
+        error: { name: 'Meteor.Error', message: 'Too many requests [too-many-requests]', error: 'too-many-requests' }
+      });
+
+      expect(traces).to.have.lengthOf(1);
+      expect(traces[0]).to.include({ methodName: 'spam', source: 'instrumentation', sessionId: 'c1', duration: 3 });
+      expect(traces[0].error.message).to.include('Too many requests');
+    });
+
+    it('caps timing-only traces per sweep window', function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+      const reject = (i) => {
+        I.emit('method.start', { traceId: `r${i}`, name: 'spam', ts: Date.now() });
+        I.emit('method.error', { traceId: `r${i}`, name: 'spam', durationMs: 1, error: { message: 'too many' } });
+      };
+
+      for (let i = 0; i < MethodTracer.MAX_INSTR_ONLY_PER_WINDOW + 5; i++) reject(i);
+      expect(traces).to.have.lengthOf(MethodTracer.MAX_INSTR_ONLY_PER_WINDOW);
+      expect(tracer._instrPending.size).to.equal(0);
+
+      tracer._sweepInstrumentation(); // next window
+      reject('next');
+      expect(traces).to.have.lengthOf(MethodTracer.MAX_INSTR_ONLY_PER_WINDOW + 1);
+    });
+
+    it('sends immediately when no method.start was seen (seam disabled)', async function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+      Meteor.server.method_handlers = { m: async function () { return 1; } };
+      tracer._wrapRegisteredMethods();
+
+      I.current = 'unseen';
+      await Meteor.server.method_handlers.m.call({ fence: {} });
+      expect(traces).to.have.lengthOf(1);
+      expect(traces[0].responseTime).to.be.undefined;
+    });
+
+    it('sweep ships held traces whose end event never arrived', async function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+      Meteor.server.method_handlers = { m: async function () { return 1; } };
+      tracer._wrapRegisteredMethods();
+
+      I.emit('method.start', { traceId: 't3', name: 'm', ts: Date.now() - 120000 });
+      I.current = 't3';
+      await Meteor.server.method_handlers.m.call({ fence: {} });
+      expect(traces).to.have.lengthOf(0);
+
+      tracer._sweepInstrumentation();
+      expect(traces).to.have.lengthOf(1);
+      expect(tracer._instrPending.size).to.equal(0);
+    });
+
+    it('stop() removes instrumentation listeners', function () {
+      const I = fakeInstrumentation();
+      tracer._instr = I;
+      tracer._startInstrumentation();
+      expect(Object.keys(I.listeners)).to.have.lengthOf(3);
+      tracer._stopInstrumentation();
+      expect(Object.keys(I.listeners)).to.have.lengthOf(0);
     });
   });
 
@@ -1058,6 +1271,148 @@ describe('MethodTracer', function () {
       tracer.indexUsageSampleRate = 0;
       // With 0 sample rate, Math.random() < 0 is always false
       expect(tracer._shouldExplainQuery(10)).to.be.false;
+    });
+  });
+  // ==========================================
+  // Audit fixes
+  // ==========================================
+  describe('audit fixes', function () {
+    const { Meteor, Mongo } = require('../../helpers/meteorMock.js');
+    let traces;
+    let savedHandlers;
+
+    beforeEach(function () {
+      traces = [];
+      savedHandlers = Meteor.server.method_handlers;
+    });
+
+    afterEach(function () {
+      Meteor.server.method_handlers = savedHandlers;
+    });
+
+    function makeTracer(opts = {}) {
+      const t = new MethodTracer({ host: 'h', enabled: false, ...opts });
+      t.client = { addTrace: (tr) => traces.push(tr) };
+      return t;
+    }
+
+    it('traceMethodArguments: false drops args and nested-call args/results', async function () {
+      const t = makeTracer({ traceMethodArguments: false });
+      Meteor.server.method_handlers = {
+        child: async function () { return { secret: 's' }; },
+        parent: async function () { return Meteor.server.method_handlers.child.call({}, 'x'); }
+      };
+      t._wrapRegisteredMethods();
+      await Meteor.server.method_handlers.parent.call({ fence: {} }, { card: '4111' });
+
+      const parent = traces.find((tr) => tr.methodName === 'parent');
+      expect(parent.args).to.deep.equal({});
+      expect(traces.find((tr) => tr.methodName === 'child').args).to.deep.equal({});
+      const op = parent.operations.find((o) => o.type === 'method');
+      expect(op.args).to.deep.equal({});
+      expect(op).to.not.have.property('result');
+    });
+
+    it('collectErrors: false omits trace.error (handler and instrumentation-only traces)', async function () {
+      const t = makeTracer({ collectErrors: false });
+      Meteor.server.method_handlers = { boom: async function () { throw new Error('nope'); } };
+      t._wrapRegisteredMethods();
+      let thrown;
+      try { await Meteor.server.method_handlers.boom.call({ fence: {} }); } catch (e) { thrown = e; }
+      expect(thrown.message).to.equal('nope'); // still propagates to the caller
+      t._recordInstrumentationOnlyTrace({ ts: Date.now() }, { name: 'limited' }, new Error('rate'), 5);
+
+      expect(traces).to.have.lengthOf(2);
+      traces.forEach((tr) => expect(tr).to.not.have.property('error'));
+    });
+
+    it('indexUsageSampleRate: 0 stays 0', function () {
+      expect(makeTracer({ indexUsageSampleRate: 0 }).indexUsageSampleRate).to.equal(0);
+    });
+
+    describe('Mongo instrumentation', function () {
+      const proto = Mongo.Collection.prototype;
+      const names = ['find', 'findOne', 'insert', 'update', 'remove', 'upsert', 'rawCollection',
+        'findOneAsync', 'insertAsync', 'updateAsync', 'removeAsync', 'upsertAsync'];
+      let saved;
+
+      beforeEach(function () {
+        saved = {};
+        names.forEach((n) => { saved[n] = Object.getOwnPropertyDescriptor(proto, n); });
+      });
+
+      afterEach(function () {
+        names.forEach((n) => {
+          if (saved[n]) Object.defineProperty(proto, n, saved[n]);
+          else delete proto[n];
+        });
+        // drop the once-per-process "instrumented" marker so the next test re-instruments
+        Object.getOwnPropertySymbols(proto).forEach((sym) => { delete proto[sym]; });
+      });
+
+      function ctx() {
+        return { methodName: 'm', startTime: Date.now(), operations: [], maxQueryFingerprints: 100, maxQueryOperations: 100 };
+      }
+
+      it('keeps cursor fetch()/count() synchronous, inside and outside a method', function () {
+        const t = makeTracer();
+        t._instrumentMongoOperations();
+        const coll = new Mongo.Collection('local');
+
+        expect(coll.find({}).fetch()).to.deep.equal([]);
+        expect(coll.find({}).count()).to.equal(0);
+        t._asyncContextStorage.run({ methodContext: ctx() }, () => {
+          expect(coll.find({}).fetch()).to.deep.equal([]);
+          expect(coll.find({}).count()).to.equal(0);
+        });
+      });
+
+      it('does not double-wrap on restart (second tracer instance)', async function () {
+        makeTracer()._instrumentMongoOperations();
+        const t2 = makeTracer();
+        t2._instrumentMongoOperations();
+        const coll = new Mongo.Collection('users');
+        const c = ctx();
+        await t2._asyncContextStorage.run({ methodContext: c }, () => coll.findOneAsync({ _id: 'a' }));
+        expect(c.operations.filter((o) => o.type === 'db')).to.have.lengthOf(1);
+      });
+
+      it('records exactly one db op per findOneAsync', async function () {
+        const t = makeTracer();
+        t._instrumentMongoOperations();
+        const coll = new Mongo.Collection('users');
+        const c = ctx();
+        await t._asyncContextStorage.run({ methodContext: c }, () => coll.findOneAsync({ _id: 'a' }));
+
+        const dbOps = c.operations.filter((o) => o.type === 'db');
+        expect(dbOps).to.have.lengthOf(1);
+        expect(dbOps[0]).to.include({ operation: 'findOneAsync', collection: 'users' });
+        expect(dbOps[0].selector).to.deep.equal({ _id: 'a' });
+      });
+    });
+
+    it('strips query string and credentials from fetch op URLs', async function () {
+      const savedFetch = global.fetch;
+      global.fetch = () => Promise.resolve({ status: 200 });
+      try {
+        const t = makeTracer();
+        t._instrumentFetchOperations();
+        const c = { methodName: 'm', startTime: Date.now(), operations: [] };
+        await t._asyncContextStorage.run({ methodContext: c },
+          () => global.fetch('https://user:pw@api.example.com/v1/x?api_key=SECRET#frag'));
+        expect(c.operations[0].url).to.equal('https://api.example.com/v1/x');
+      } finally {
+        global.fetch = savedFetch;
+      }
+    });
+
+    it('does not start its own MongoPoolCollector (agent owns it)', function () {
+      const poolStart = sinon.stub(MongoPoolCollector.prototype, 'start');
+      sinon.stub(DDPQueueCollector.prototype, 'start');
+      const t = makeTracer();
+      t._startWaitTimeCollectors();
+      expect(poolStart.called).to.be.false;
+      expect(t.ddpQueueCollector).to.be.instanceOf(DDPQueueCollector);
     });
   });
 });

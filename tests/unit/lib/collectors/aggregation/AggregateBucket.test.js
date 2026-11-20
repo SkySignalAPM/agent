@@ -1,5 +1,6 @@
 import { expect } from "chai";
 import { AggregateBucket, percentile } from "../../../../../lib/collectors/aggregation/AggregateBucket.js";
+import { percentiles } from "../../../../../lib/utils/percentile.js";
 
 describe("percentile", function () {
 	it("computes p50 and p95 of small arrays", function () {
@@ -13,6 +14,12 @@ describe("percentile", function () {
 
 	it("handles single element", function () {
 		expect(percentile([42], 0.5)).to.equal(42);
+	});
+
+	it("matches utils/percentile on unsorted input", function () {
+		const values = Array.from({ length: 100 }, (_, i) => 100 - i);
+		expect(percentile(values, 0.95)).to.equal(percentiles(values).p95);
+		expect(percentile(values, 0.95)).to.equal(95);
 	});
 });
 
@@ -42,6 +49,7 @@ describe("AggregateBucket", function () {
 
 		const row = bucket.toAggregateRow();
 		expect(row.observerCount).to.equal(2);
+		expect(row).to.not.have.property('observerCountAvg'); // never computed; server field is optional
 		expect(row.addedSum).to.equal(6);
 		expect(row.changedSum).to.equal(9);
 		expect(row.removedSum).to.equal(1);
@@ -66,8 +74,8 @@ describe("AggregateBucket", function () {
 			});
 		}
 		const row = bucket.toAggregateRow();
-		expect(row.initialQueryMsP50).to.be.closeTo(50, 1);
-		expect(row.initialQueryMsP95).to.be.closeTo(95, 1);
+		expect(row.initialQueryMsP50).to.equal(50);
+		expect(row.initialQueryMsP95).to.equal(95);
 		expect(row.initialQueryMsMax).to.equal(100);
 	});
 

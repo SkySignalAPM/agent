@@ -53,6 +53,24 @@ describe("QuerySignature", function () {
 		expect(a).to.equal(b);
 	});
 
+	it("$in arrays of any length share one signature", function () {
+		const ids = (n) => Array.from({ length: n }, (_, i) => `id${i}`);
+		const one = computeQuerySignature({ _id: { $in: ids(1) } }, {});
+		expect(computeQuerySignature({ _id: { $in: ids(2) } }, {})).to.equal(one);
+		expect(computeQuerySignature({ _id: { $in: ids(500) } }, {})).to.equal(one);
+	});
+
+	it("distinct $or branch shapes stay distinct", function () {
+		const a = computeQuerySignature({ $or: [{ a: 1 }, { b: 2 }] }, {});
+		const b = computeQuerySignature({ $or: [{ a: 1 }] }, {});
+		expect(a).to.not.equal(b);
+	});
+
+	it("params: nested array length is ignored, top-level arity is not", function () {
+		expect(computeParamsSignature([["x"]])).to.equal(computeParamsSignature([["x", "y", "z"]]));
+		expect(computeParamsSignature(["a"])).to.not.equal(computeParamsSignature(["a", "b"]));
+	});
+
 	it("null selector produces stable signature", function () {
 		expect(computeQuerySignature(null, {})).to.equal(computeQuerySignature({}, {}));
 	});

@@ -627,4 +627,65 @@ describe('BullMQMonitor', function () {
       expect(() => monitor.cleanupHooks()).to.not.throw();
     });
   });
+  // ==========================================
+  // Queue.add trace correlation (payload untouched)
+  // ==========================================
+  describe('Queue.add trace correlation', function () {
+    const Module = require('module');
+    const { methodTraceContextStore } = require('../../../../lib/collectors/MethodTracer.js');
+    let origResolve;
+    let FakeQueue;
+
+    beforeEach(function () {
+      let nextId = 1;
+      FakeQueue = class {
+        constructor(name) { this.name = name; this.received = []; }
+        add(name, data) { this.received.push(data); return Promise.resolve({ id: String(nextId++), data }); }
+        addBulk(jobs) { return Promise.resolve(jobs.map(j => ({ id: String(nextId++), data: j.data }))); }
+      };
+      const fakePath = '__fake_bullmq__';
+      require.cache[fakePath] = { id: fakePath, filename: fakePath, loaded: true, exports: { Queue: FakeQueue, QueueEvents: class {}, Job: class {} } };
+      origResolve = Module._resolveFilename;
+      Module._resolveFilename = function (req, ...rest) {
+        return req === 'bullmq' ? fakePath : origResolve.call(this, req, ...rest);
+      };
+      // Load an isolated copy of the module so its module-scope `bullmq` binds to
+      // the fake without leaking into the shared instance other tests use.
+      const modPath = require.resolve('../../../../lib/collectors/jobs/BullMQMonitor.js');
+      const shared = require.cache[modPath];
+      delete require.cache[modPath];
+      try {
+        const Fresh = require(modPath).default;
+        monitor = new Fresh({ client: mockClient, host: 'test-host' });
+      } finally {
+        require.cache[modPath] = shared;
+      }
+      expect(monitor.isPackageAvailable()).to.be.true;
+    });
+
+    afterEach(function () {
+      monitor._unwrapQueueAdd();
+      Module._resolveFilename = origResolve;
+      delete require.cache.__fake_bullmq__;
+    });
+
+    it('passes array/string/object/undefined payloads through unchanged and correlates by job id', async function () {
+      const originalAdd = FakeQueue.prototype.add;
+      monitor._wrapQueueAdd();
+      expect(FakeQueue.prototype.add).to.not.equal(originalAdd); // the real wrapper is under test
+      const q = new FakeQueue('emails');
+
+      const payloads = [[1, 2], 'str', { a: 1 }, undefined];
+      const jobs = await methodTraceContextStore.run({ methodContext: { traceId: 'tr-1' } },
+        () => Promise.all(payloads.map(p => q.add('job', p))));
+
+      expect(q.received[0]).to.equal(payloads[0]);
+      expect(q.received[1]).to.equal('str');
+      expect(q.received[2]).to.equal(payloads[2]);
+      expect(q.received[2]).to.deep.equal({ a: 1 });
+      expect(q.received[3]).to.be.undefined;
+      expect(monitor._extractTraceId(`emails:${jobs[0].id}`, jobs[0].data)).to.equal('tr-1');
+      expect(monitor._extractTraceId('emails:unknown', undefined)).to.be.null;
+    });
+  });
 });

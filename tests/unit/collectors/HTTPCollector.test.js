@@ -225,4 +225,23 @@ describe('HTTPCollector', function () {
       expect(stats).to.have.property('poolSize', 50);
     });
   });
+  describe('URL secrets', function () {
+
+    it('records path and referrer without query strings', function () {
+      collector._setupMiddleware();
+      const req = {
+        url: '/reset-password?token=SECRET',
+        method: 'GET',
+        headers: { referer: 'https://u:p@app.example.com/login?sid=SECRET' },
+        socket: {}
+      };
+      const res = { statusCode: 200, end() {}, write() {} };
+      collector.middleware(req, res, () => {});
+      res.end();
+
+      const entry = collector.batch[collector.batch.length - 1];
+      expect(entry.path).to.equal('/reset-password');
+      expect(entry.referrer).to.equal('https://app.example.com/login');
+    });
+  });
 });

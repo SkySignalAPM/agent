@@ -28,6 +28,7 @@ import BrowserContext from './BrowserContext';
 import RUMCollector from './RUMCollector';
 import RUMClient from './RUMClient';
 import ErrorTracker from './ErrorTracker';
+import stripUrl from './stripUrl';
 
 class SkySignalRUM {
 	constructor() {
@@ -90,9 +91,12 @@ class SkySignalRUM {
 				debug: this.config.debug
 			});
 
-			// Connect collector to client
+			// Connect collector to client. The collector emits once per page load,
+			// usually from a hide/unload handler that runs after RUMClient's own
+			// flush listener, so flush now or the measurement is lost on unload.
 			this.collector.onMeasurement((measurement) => {
 				this.client.addMeasurement(measurement);
+				this.client.flush();
 			});
 
 			// Track current route
@@ -100,7 +104,7 @@ class SkySignalRUM {
 
 			// Track initial page view
 			if (this.config.trackPageViews) {
-				this._trackPageView(this.currentRoute, document.referrer || null);
+				this._trackPageView(this.currentRoute, stripUrl(document.referrer) || null);
 			}
 
 			// Setup SPA route change detection
@@ -205,20 +209,10 @@ class SkySignalRUM {
 			this._trackPageView(newRoute, this.currentRoute); // Previous route is the referrer
 		}
 
-		// Update current route
+		// Update current route. The collector is kept: web vitals are measured
+		// once per page load (web-vitals replays TTFB/FCP to new subscribers), so
+		// a new collector per route would re-report the landing page's vitals.
 		this.currentRoute = newRoute;
-
-		// Reset collector to start fresh metrics for new route
-		// Create new collector instance for the new route with config
-		this.collector = new RUMCollector(this.sessionManager, this.browserContext, {
-			trackUserActions: this.config.trackUserActions,
-			debug: this.config.debug
-		});
-
-		// Re-connect collector to client
-		this.collector.onMeasurement((measurement) => {
-			this.client.addMeasurement(measurement);
-		});
 	}
 
 	/**
@@ -238,17 +232,8 @@ class SkySignalRUM {
 			this._trackPageView(newRoute, this.currentRoute);
 		}
 
-		// Update current route
+		// Update current route (collector is kept, see _handleRouteChange)
 		this.currentRoute = newRoute;
-
-		// Reset collector for new page with config
-		this.collector = new RUMCollector(this.sessionManager, this.browserContext, {
-			trackUserActions: this.config.trackUserActions,
-			debug: this.config.debug
-		});
-		this.collector.onMeasurement((measurement) => {
-			this.client.addMeasurement(measurement);
-		});
 	}
 
 	/**
@@ -376,9 +361,22 @@ if (typeof Meteor !== 'undefined' && Meteor.settings && Meteor.settings.public &
 			const baseEndpoint = settings.endpoint || 'https://dash.skysignal.app';
 			const endpoint = `${baseEndpoint}/api/v1/errors`;
 
+			// Resolve the app version for tagging client errors. Mirrors the
+			// server agent's client-available detection order:
+			// errorTracking.appVersion -> public.skysignal.appVersion ->
+			// public.appVersion -> __meteor_runtime_config__.appVersion.
+			const appVersion =
+				errorTrackingSettings.appVersion ||
+				settings.appVersion ||
+				Meteor.settings.public.appVersion ||
+				(typeof __meteor_runtime_config__ !== 'undefined' &&
+					__meteor_runtime_config__.appVersion) ||
+				null;
+
 			// Configure error tracker
 			const config = {
 				publicKey: settings.publicKey,
+				appVersion: appVersion,
 				endpoint: endpoint,
 				enabled: true,
 				attachScreenshots: errorTrackingSettings.attachScreenshots || false,
@@ -422,6 +420,7 @@ if (typeof Meteor !== 'undefined' && Meteor.settings && Meteor.settings.public &
 	initErrorTrackerWhenReady();
 }
 
-// Export singleton instances
+// Export singleton instances. The named SkySignalRUM export backs the
+// documented `import { SkySignalRUM } from 'meteor/skysignal:agent'`.
 export default rumInstance;
-export { errorTrackerInstance as SkySignalErrorTracker };
+export { rumInstance as SkySignalRUM, errorTrackerInstance as SkySignalErrorTracker };

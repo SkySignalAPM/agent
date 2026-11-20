@@ -219,13 +219,26 @@ describe('LiveQueriesCollector', function () {
       expect(sanitized).to.deep.equal(query);
     });
 
-    it('does not redact falsy sensitive fields', function () {
-      const query = { password: '', token: null, apiKey: 0 };
-      const sanitized = collector._sanitizeQuery(query);
-      // Falsy values pass the `if (sanitized[field])` check as false
-      expect(sanitized.password).to.equal('');
-      expect(sanitized.token).to.be.null;
-      expect(sanitized.apiKey).to.equal(0);
+    it('redacts accounts-base login token selectors (dotted and nested keys)', function () {
+      const sanitized = collector._sanitizeQuery({
+        _id: 'user1',
+        'services.resume.loginTokens.hashedToken': 'HASH',
+        $or: [{ profile: { apiKey: 'k1', name: 'n' } }],
+        token: { $in: ['a', 'b'] }
+      });
+      expect(sanitized).to.deep.equal({
+        _id: 'user1',
+        'services.resume.loginTokens.hashedToken': '[REDACTED]',
+        $or: [{ profile: { apiKey: '[REDACTED]', name: 'n' } }],
+        token: { $in: ['[REDACTED]', '[REDACTED]'] }
+      });
+    });
+
+    it('bounds recursion depth', function () {
+      let deep = { leaf: 1 };
+      for (let i = 0; i < 50; i++) deep = { a: deep };
+      expect(() => collector._sanitizeQuery(deep)).to.not.throw();
+      expect(JSON.stringify(collector._sanitizeQuery(deep))).to.include('[TRUNCATED]');
     });
   });
 
@@ -525,6 +538,98 @@ describe('LiveQueriesCollector', function () {
       expect(stats.collections).to.have.lengthOf(2);
       expect(stats.collections).to.include('users');
       expect(stats.collections).to.include('posts');
+    });
+  });
+  // ==========================================
+  // Shared multiplexer stop
+  // ==========================================
+  describe('shared observer stop', function () {
+
+    it('stays active until the last sharing handle stops (double stop counts once)', function () {
+      const multiplexer = {};
+      const first = collector._createObserverData('tasks');
+      const h1 = { _multiplexer: multiplexer, stop: sinon.stub() };
+      collector._finalizeObserver(first, h1, 'oplog');
+      collector._wrapHandle(h1);
+
+      const provisional = collector._createObserverData('tasks');
+      const h2 = { _multiplexer: multiplexer, stop: sinon.stub() };
+      collector._finalizeObserver(provisional, h2, 'oplog');
+      collector._wrapHandle(h2);
+      expect(first.handlersSharing).to.equal(2);
+      expect(h2).to.not.have.property('_skySignalHandlerId');
+
+      h1.stop();
+      h1.stop();
+      expect(first.status).to.equal('active');
+      expect(first.handlersSharing).to.equal(1);
+
+      h2.stop();
+      expect(first.status).to.equal('stopped');
+      clearTimeout(first._initialLoadTimer);
+    });
+  });
+
+  // ==========================================
+  // Aggregation window deltas
+  // ==========================================
+  describe('aggregation window deltas', function () {
+
+    it('feeds per-window counter deltas and uses them for leak_candidate', function () {
+      mockClient.sendLiveQueryAggregates = sinon.stub();
+      collector.ingestAggregation = true;
+      collector.observers.set('o1', {
+        observerId: 'o1', collectionName: 'tasks', query: { owner: 'u1' },
+        observerType: 'oplog', status: 'active', host: 'test-host',
+        createdAt: Date.now() - 30 * 60 * 1000, // old enough for leak_candidate
+        addedCount: 2, changedCount: 3, removedCount: 1, liveUpdateCount: 6,
+        documentCount: 1, _lastUpdateTime: Date.now(), _lastUpdateCount: 0
+      });
+
+      collector._sendUpdates();
+      const row1 = mockClient.sendLiveQueryAggregates.lastCall.args[0].aggregates[0];
+      expect(row1).to.include({ addedSum: 2, changedSum: 3, removedSum: 1, liveUpdatesSum: 6 });
+      const leaks1 = mockClient.sendLiveQueries.lastCall.args[0][0]._interestingReasons;
+      expect(leaks1).to.include('leak_candidate');
+
+      // Window 2: no new events
+      mockClient.sendLiveQueries.resetHistory();
+      collector._sendUpdates();
+      const row2 = mockClient.sendLiveQueryAggregates.lastCall.args[0].aggregates[0];
+      expect(row2).to.include({ addedSum: 0, changedSum: 0, removedSum: 0, liveUpdatesSum: 0 });
+      const entities = mockClient.sendLiveQueries.lastCall ? mockClient.sendLiveQueries.lastCall.args[0] : [];
+      entities.forEach(e => expect(e._interestingReasons).to.not.include('leak_candidate'));
+
+      // Window 3: one change
+      collector.observers.get('o1').changedCount++;
+      collector.observers.get('o1').liveUpdateCount++;
+      collector._sendUpdates();
+      const row3 = mockClient.sendLiveQueryAggregates.lastCall.args[0].aggregates[0];
+      expect(row3).to.include({ changedSum: 1, liveUpdatesSum: 1, addedSum: 0 });
+    });
+
+    it('re-sends a quiet long-lived observer every 6h so the platform TTL does not drop it', function () {
+      mockClient.sendLiveQueryAggregates = sinon.stub();
+      collector.ingestAggregation = true;
+      const obs = {
+        observerId: 'o2', collectionName: 'tasks', query: { owner: 'u2' },
+        observerType: 'oplog', status: 'active', host: 'test-host', avgProcessingTime: null,
+        createdAt: Date.now() - 7 * 60 * 60 * 1000,
+        addedCount: 0, changedCount: 0, removedCount: 0, liveUpdateCount: 0,
+        documentCount: 1, _lastUpdateTime: Date.now(), _lastUpdateCount: 0
+      };
+      collector.observers.set('o2', obs);
+
+      collector._sendUpdates();
+      expect(mockClient.sendLiveQueries.lastCall.args[0][0]._interestingReasons).to.include('long_lived_heartbeat');
+
+      mockClient.sendLiveQueries.resetHistory();
+      collector._sendUpdates(); // within 6h of the last report: not re-sent
+      expect(mockClient.sendLiveQueries.called).to.be.false;
+
+      obs._lastPromotedAt -= 6 * 60 * 60 * 1000 + 1;
+      collector._sendUpdates();
+      expect(mockClient.sendLiveQueries.called).to.be.true;
     });
   });
 });

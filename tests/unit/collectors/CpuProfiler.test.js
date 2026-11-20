@@ -265,4 +265,43 @@ describe('CpuProfiler', function () {
       expect(profiler.intervalId).to.be.null;
     });
   });
+  // ==========================================
+  // _captureProfile robustness
+  // ==========================================
+  describe('_captureProfile', function () {
+    const inspector = require('inspector');
+
+    // Fake session: enable/start succeed, Profiler.stop answers with stopReply
+    function fakeSession(stopReply) {
+      return function FakeSession() {
+        this.connect = () => {};
+        this.disconnect = () => {};
+        this.post = (method, cb) => {
+          if (method === 'Profiler.stop') return cb(...stopReply);
+          cb(null);
+        };
+      };
+    }
+
+    it('does not throw from the timer when stop() runs during the profile window', function () {
+      const clock = sinon.useFakeTimers();
+      sinon.stub(inspector, 'Session').callsFake(fakeSession([null, { profile: {} }]));
+      profiler._captureProfile().catch(() => {}); // never settles once stopped
+      profiler.stop();
+      expect(() => clock.tick(profiler.profileDuration + 1)).to.not.throw();
+      expect(profiler._isProfiling).to.be.false;
+    });
+
+    it('rejects (not TypeError) when Profiler.stop returns an error with no result', async function () {
+      const clock = sinon.useFakeTimers();
+      sinon.stub(inspector, 'Session').callsFake(fakeSession([new Error('stop failed'), undefined]));
+      const p = profiler._captureProfile();
+      clock.tick(profiler.profileDuration + 1);
+      let err;
+      try { await p; } catch (e) { err = e; }
+      expect(err.message).to.equal('stop failed');
+      expect(profiler._isProfiling).to.be.false;
+      expect(profiler._session).to.be.null;
+    });
+  });
 });

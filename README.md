@@ -18,7 +18,7 @@ Official APM agent for monitoring Meteor.js applications with [SkySignal](https:
 - **CPU Profiling** - On-demand inspector-based CPU profiling when CPU exceeds a configurable threshold
 - **Deprecated API Detection** - Track sync vs async Meteor API usage to guide Meteor 3.x migration
 - **Environment Snapshots** - Periodic capture of package versions, Node.js flags, and OS metadata
-- **Vulnerability Scanning** - Hourly `npm audit` with severity reporting for high/critical CVEs
+- **Vulnerability Scanning** - `npm audit` once per process with severity reporting for high/critical CVEs
 - **Real User Monitoring (RUM)** - Browser-side Core Web Vitals (LCP, FID, CLS, TTFB, FCP, TTI) with automatic performance warnings
 - **SPA Route Tracking** - Automatic performance collection on every route change
 - **Session Tracking** - 30-minute user sessions with localStorage persistence
@@ -127,7 +127,6 @@ Every server-side configuration option has a corresponding environment variable.
 | `SKYSIGNAL_COLLECT_MONGO_POOL` | `collectMongoPool` | Boolean |
 | `SKYSIGNAL_COLLECT_COLLECTION_STATS` | `collectCollectionStats` | Boolean |
 | `SKYSIGNAL_COLLECT_DDP` | `collectDDPConnections` | Boolean |
-| `SKYSIGNAL_COLLECT_RUM` | `collectRUM` | Boolean |
 | `SKYSIGNAL_COLLECT_JOBS` | `collectJobs` | Boolean |
 | `SKYSIGNAL_COLLECT_LOGS` | `collectLogs` | Boolean |
 | `SKYSIGNAL_COLLECT_DNS_TIMINGS` | `collectDnsTimings` | Boolean |
@@ -167,9 +166,9 @@ All collection interval and performance options also have corresponding `SKYSIGN
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `batchSize` | Number | `50` | Max items per batch before auto-flush |
-| `batchSizeBytes` | Number | `262144` | Max bytes (256KB) per batch |
-| `flushInterval` | Number | `10000` | Interval (ms) to flush batched data |
+| `batchSize` | Number | `100` | Max items per batch before auto-flush |
+| `batchSizeBytes` | Number | `1048576` | Max bytes (1MB) per batch |
+| `flushInterval` | Number | `60000` | Interval (ms) to flush batched data |
 
 ### Sampling Rates
 
@@ -185,15 +184,14 @@ All collection interval and performance options also have corresponding `SKYSIGN
 | `systemMetricsInterval` | Number | `60000` | System metrics collection interval (1 minute) |
 | `mongoPoolInterval` | Number | `60000` | MongoDB pool metrics interval (1 minute) |
 | `collectionStatsInterval` | Number | `300000` | Collection stats interval (5 minutes) |
-| `ddpConnectionsInterval` | Number | `30000` | DDP connection updates interval (30 seconds) |
+| `ddpConnectionsInterval` | Number | `60000` | DDP connection updates interval (60 seconds) |
 | `jobsInterval` | Number | `30000` | Background job stats interval (30 seconds) |
 | `dnsTimingsInterval` | Number | `60000` | DNS timing aggregation interval (1 minute) |
 | `outboundHttpInterval` | Number | `60000` | Outbound HTTP aggregation interval (1 minute) |
-| `cpuProfileCheckInterval` | Number | `30000` | CPU check interval for threshold profiling (30 seconds) |
+| `cpuProfileCheckInterval` | Number | `60000` | CPU check interval for threshold profiling (60 seconds) |
 | `deprecatedApisInterval` | Number | `300000` | Deprecated API usage reporting interval (5 minutes) |
 | `publicationsInterval` | Number | `300000` | Publication efficiency reporting interval (5 minutes) |
 | `environmentInterval` | Number | `1800000` | Environment snapshot interval (30 minutes) |
-| `vulnerabilitiesInterval` | Number | `3600000` | Vulnerability scan interval (1 hour) |
 
 ### Feature Flags
 
@@ -201,15 +199,17 @@ All collection interval and performance options also have corresponding `SKYSIGN
 |--------|------|---------|-------------|
 | `collectSystemMetrics` | Boolean | `true` | Collect system metrics (CPU, memory, disk, network) |
 | `collectTraces` | Boolean | `true` | Collect method/publication traces |
-| `collectErrors` | Boolean | `true` | Collect errors and exceptions |
+| `collectErrors` | Boolean | `true` | Attach errors to method traces. `false` records the method without error details |
 | `collectHttpRequests` | Boolean | `true` | Collect HTTP request metrics |
+| `httpRequestsInterval` | Number | `10000` | HTTP request metrics send interval (ms) |
+| `httpSampleRate` | Number | `1.0` | Fraction of HTTP requests to record (0-1) |
+| `httpExcludePatterns` | Array | `null` | RegExp/String patterns of request paths to skip |
 | `collectMongoPool` | Boolean | `true` | Collect MongoDB connection pool metrics |
 | `collectCollectionStats` | Boolean | `true` | Collect MongoDB collection statistics |
 | `collectDDPConnections` | Boolean | `true` | Collect DDP/WebSocket connection metrics |
 | `collectLiveQueries` | Boolean | `true` | Collect Meteor live query metrics (change streams, oplog, polling) |
 | `collectJobs` | Boolean | `true` | Collect background job metrics |
 | `collectLogs` | Boolean | `true` | Collect server-side logs from console and Meteor Log |
-| `collectRUM` | Boolean | `false` | Client-side RUM (disabled by default, requires publicKey) |
 | `collectDnsTimings` | Boolean | `true` | Collect DNS resolution latency by wrapping `dns.lookup`/`dns.resolve` |
 | `collectOutboundHttp` | Boolean | `true` | Collect outbound HTTP metrics via `diagnostics_channel` (Node 16+) |
 | `collectCpuProfiles` | Boolean | `true` | Enable on-demand CPU profiling when CPU exceeds threshold |
@@ -268,26 +268,25 @@ The platform dashboard shows an **"Aggregated ingest"** chip on the Live Queries
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `traceMethodArguments` | Boolean | `true` | Capture method arguments (sanitized) |
+| `traceMethodArguments` | Boolean | `true` | Capture method arguments (sanitized). `false` sends no arguments or nested-call results |
 | `maxArgLength` | Number | `1000` | Max string length for arguments |
-| `traceMethodOperations` | Boolean | `true` | Capture detailed operation timeline |
 
 ### Index Usage Tracking
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `captureIndexUsage` | Boolean | `true` | Capture MongoDB index usage via explain() |
-| `indexUsageSampleRate` | Number | `0.05` | Sample 5% of queries for explain() |
-| `explainVerbosity` | String | `executionStats` | `queryPlanner` \| `executionStats` \| `allPlansExecution` |
-| `explainSlowQueriesOnly` | Boolean | `false` | Only explain queries exceeding slow threshold |
+| `indexUsageSampleRate` | Number | `0.01` | Sample 1% of queries for explain() (`0` disables) |
+| `explainVerbosity` | String | `queryPlanner` | `queryPlanner` \| `executionStats` \| `allPlansExecution` |
+| `explainSlowQueriesOnly` | Boolean | `true` | Only explain queries exceeding slow threshold |
 
 ### Performance Safeguards
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `maxBatchRetries` | Number | `3` | Max retries for failed batches |
-| `requestTimeout` | Number | `3000` | API request timeout (3 seconds) |
-| `maxMemoryMB` | Number | `50` | Max memory (MB) for batches |
+| `requestTimeout` | Number | `30000` | API request timeout (30 seconds) |
+| `maxMemoryMB` | Number | `50` | Cap (MB) on request bodies in flight or awaiting retry; new batches are dropped above it |
 
 ### CPU Profiling Configuration
 
@@ -296,13 +295,6 @@ The platform dashboard shows an **"Aggregated ingest"** chip on the Live Queries
 | `cpuProfileThreshold` | Number | `80` | CPU usage percentage to trigger an on-demand profile |
 | `cpuProfileDuration` | Number | `10000` | Duration (ms) of the CPU profile sample |
 | `cpuProfileCooldown` | Number | `300000` | Minimum time (ms) between consecutive profiles (5 minutes) |
-
-### Worker Offload (Large Pools)
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `useWorkerThread` | Boolean | `false` | Enable worker thread for large pools |
-| `workerThreshold` | Number | `50` | Spawn worker if pool size exceeds this |
 
 ### Background Job Monitoring
 
@@ -319,7 +311,7 @@ The platform dashboard shows an **"Aggregated ingest"** chip on the Live Queries
 | `collectLogs` | Boolean | `true` | Enable log capturing |
 | `logLevels` | Array | `["info", "warn", "error", "fatal"]` | Log levels to capture (excludes `debug` by default) |
 | `logSampleRate` | Number | `1.0` | Sample rate (0-1). Reduce for high-volume apps |
-| `logMaxMessageLength` | Number | `10000` | Max characters per log message before truncation |
+| `logMaxMessageLength` | Number | `5000` | Max characters per log message before truncation |
 | `logCaptureConsole` | Boolean | `true` | Intercept `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug` |
 | `logCaptureMeteorLog` | Boolean | `true` | Intercept Meteor `Log.info`, `Log.warn`, `Log.error`, `Log.debug` |
 
@@ -342,6 +334,12 @@ Client-side error tracking is configured in `Meteor.settings.public.skysignal.er
 | `errorTracking.attachScreenshots` | Boolean | `false` | Attach a screenshot with sensitive elements redacted |
 | `errorTracking.captureUnhandledRejections` | Boolean | `true` | Capture unhandled Promise rejections |
 | `errorTracking.debug` | Boolean | `false` | Log error tracker activity to the browser console |
+| `errorTracking.screenshotSamplingRate` | Number | `100` | Percent of errors that get a screenshot (`0` disables) |
+| `errorTracking.redactSelectors` | Array | `[]` | Extra CSS selectors to redact in screenshots, added to the built-in list (password and card fields) |
+
+Client errors are rate-limited: the same error is sent at most once per minute, and at most 10 errors per minute in total. Failed sends are dropped and counted in `SkySignalErrorTracker.getStats().failedErrors`.
+
+URLs sent by the client (page, referrer, resources, form actions) are reduced to origin and path; query strings and `#` fragments are never sent. Apps that route with `#` report all errors under one URL.
 
 The screenshot renderer (`html2canvas`) loads on demand after an error passes the screenshot sampling and type filters. Keeping screenshots disabled does not download or evaluate the renderer through the agent. Enabling screenshots alone does not load it either; Meteor caches the module after the first eligible capture.
 
@@ -381,6 +379,22 @@ Automatic instrumentation of Meteor Methods:
 - Wait time tracking (DDP queue, connection pool)
 - Error tracking with stack traces
 - User context and session correlation
+- Every registered method is traced, including methods registered before `SkySignalAgent.start()` (e.g. accounts `login`). Accounts methods carrying secrets have their args and results redacted.
+
+#### Meteor 3.6+ `instrumentation` package
+
+On Meteor 3.6+, add Meteor's core instrumentation package for extra method telemetry. There is no agent configuration to change:
+
+```bash
+meteor add instrumentation
+```
+
+The agent detects it automatically and subscribes to its `method.*` events:
+- **`responseTime`** on each method trace: time from invocation start until the result is sent. It includes the write-fence wait, which happens after the handler returns.
+- **Calls whose handler never ran** (for example, rejected by `DDPRateLimiter`) are reported as timing-only error traces (`source: "instrumentation"`).
+- **Failed subscriptions** record the original server error from `publication.error`. Without it, the agent records only the sanitized `500: Internal server error` sent to the client.
+
+Without the package, or with `METEOR_INSTRUMENTATION_DISABLED=1`, the agent works exactly as before. The agent never calls `Instrumentation.configure()`, so your own capture and prefix settings are untouched.
 
 ### Publication Monitoring
 
@@ -440,6 +454,11 @@ packages, set `jobsPackage: "quave:synced-cron"` in your SkySignal agent
 configuration to select this adapter. Cron statistics describe this host's
 executions; recurring job definitions are not counted as queued work. Monitoring
 starts when the agent starts and does not backfill historical executions.
+
+BullMQ jobs are linked to the method that queued them without modifying the job
+payload, so the link is only made in the container that queued the job. Steve
+Jobs monitoring reports changes after startup; existing job documents are not
+replayed.
 
 ### DNS Timing
 
@@ -508,14 +527,14 @@ Reported every 30 minutes by default.
 ### Vulnerability Scanning
 
 Automated security scanning for known package vulnerabilities:
-- Runs `npm audit --json` on a configurable schedule
+- Runs `npm audit --json` once per process (dependencies can't change while the app runs)
 - Supports both npm audit v6 and v7+ JSON formats
 - Only reports **high** and **critical** severity vulnerabilities to reduce noise
 - Tracks: package name, severity, advisory title, fix availability
 - Deduplicates results (skips reporting if unchanged since last scan)
 - 30-second timeout on `npm audit` to prevent blocking
 
-Reported every 1 hour by default. Initial scan delayed 60s after startup.
+The scan runs 60s after startup.
 
 ### Error Tracking
 
@@ -543,6 +562,8 @@ Server-side log capture with structured metadata:
 ### Real User Monitoring (RUM) - Client-Side
 
 **Automatic browser-side performance monitoring** collecting Core Web Vitals and providing PageSpeed-style performance warnings.
+
+One measurement is sent per page load, when the page is hidden or unloaded, with final CLS/LCP values. It is attributed to the landing page; later client-side route changes are recorded as page views.
 
 #### What Gets Collected
 
@@ -621,7 +642,7 @@ RUM monitoring **auto-initializes** from your Meteor settings.
 
 The agent **automatically**:
 - Collects Core Web Vitals using Google's `web-vitals` library
-- Tracks SPA route changes and collects metrics for each route
+- Tracks SPA route changes as page views
 - Batches measurements and sends via fire-and-forget HTTP with `keepalive: true`
 - Provides PageSpeed-style console warnings for poor performance
 - Correlates metrics with server-side traces via Meteor.userId()

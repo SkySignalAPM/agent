@@ -108,6 +108,11 @@ describe('ErrorTracker', function () {
       const tracker = new ErrorTracker({ enabled: false });
       expect(tracker.config.enabled).to.be.false;
     });
+
+    it('passes screenshotSamplingRate 0 through instead of defaulting to 100', function () {
+      const tracker = new ErrorTracker({ attachScreenshots: true, screenshotSamplingRate: 0 });
+      expect(tracker.screenshotCapture.config.samplingRate).to.equal(0);
+    });
   });
 
   describe('init', function () {
@@ -458,7 +463,7 @@ describe('ErrorTracker', function () {
       const tracker = new ErrorTracker({ publicKey: 'pk_test' });
       const stats = tracker.getStats();
       expect(stats).to.have.property('initialized', false);
-      expect(stats).to.have.property('queuedErrors', 0);
+      expect(stats).to.have.property('failedErrors', 0);
       expect(stats).to.have.property('pendingErrors', 0);
     });
 
@@ -565,6 +570,48 @@ describe('ErrorTracker', function () {
 
       // Only one call to _sendError
       expect(tracker._sendError.calledOnce).to.be.true;
+    });
+
+    it('rate limits a repeating error to one send per minute', async function () {
+      const clock = sinon.useFakeTimers({ now: 1000000, toFake: ['Date'] });
+      try {
+        const error = { type: 'TypeError', message: 'loop', filename: 'app.js', lineno: 1 };
+        for (let i = 0; i < 30; i++) await tracker._handleError({ ...error });
+        expect(tracker._sendError.callCount).to.equal(1);
+
+        clock.tick(60 * 1000);
+        await tracker._handleError({ ...error });
+        expect(tracker._sendError.callCount).to.equal(2);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('caps distinct errors at 10 per minute and keeps the map bounded', async function () {
+      const clock = sinon.useFakeTimers({ now: 1000000, toFake: ['Date'] });
+      try {
+        for (let i = 0; i < 25; i++) await tracker._handleError({ type: 'Error', message: `e${i}` });
+        expect(tracker._sendError.callCount).to.equal(10);
+        expect(tracker.recentErrors.size).to.equal(10);
+
+        clock.tick(60 * 1000);
+        await tracker._handleError({ type: 'Error', message: 'fresh' });
+        expect(tracker._sendError.callCount).to.equal(11);
+        expect(tracker.recentErrors.size).to.equal(1);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('sends only origin + path as url (no query/hash tokens)', async function () {
+      window.location.href = 'http://localhost:3000/#/reset-password/SECRET?X-Amz-Signature=abc';
+      tracker.initialized = true;
+      try {
+        await tracker.captureError(new Error('boom'));
+      } finally {
+        window.location.href = 'http://localhost:3000/test';
+      }
+      expect(tracker._sendError.firstCall.args[0].url).to.equal('http://localhost:3000/');
     });
 
     it('clears pendingErrors in finally block', async function () {
@@ -674,20 +721,23 @@ describe('ErrorTracker', function () {
       expect(fetch.calledOnce).to.be.true;
     });
 
-    it('queues error on fetch failure', async function () {
+    // Failed sends were "queued for retry" but never retried, so the queue
+    // (holding screenshots) grew forever. They are now counted and dropped.
+    it('counts and drops the error on fetch failure', async function () {
       navigator.sendBeacon.returns(false);
       fetch.rejects(new Error('network down'));
 
       await tracker._sendError({ type: 'Error', message: 'test' });
-      expect(tracker.errorQueue).to.have.lengthOf(1);
+      expect(tracker.getStats().failedErrors).to.equal(1);
+      expect(tracker).to.not.have.property('errorQueue');
     });
 
-    it('queues error on non-ok response', async function () {
+    it('counts and drops the error on non-ok response', async function () {
       navigator.sendBeacon.returns(false);
       fetch.resolves({ ok: false, status: 500, statusText: 'Internal Server Error' });
 
       await tracker._sendError({ type: 'Error', message: 'test' });
-      expect(tracker.errorQueue).to.have.lengthOf(1);
+      expect(tracker.getStats().failedErrors).to.equal(1);
     });
   });
 

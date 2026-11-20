@@ -9,7 +9,9 @@
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { setupBrowserMocks, teardownBrowserMocks } from '../../helpers/browserMock.js';
-import { _reset as resetWebVitals } from 'web-vitals';
+// The raw CJS mock (an `import *` namespace would be a copy, so spies wouldn't bind)
+const webVitals = require('web-vitals');
+import { _reset as resetWebVitals, _triggerMetric } from 'web-vitals';
 
 // RUMCollector must be imported after browser mocks are available
 // since its constructor calls _startCollection which uses document/window/performance
@@ -33,8 +35,7 @@ describe('RUMCollector', function () {
   let clock;
 
   beforeEach(function () {
-    // Use fake timers to prevent the 10-second setTimeout in _setupSendTriggers
-    // from firing after teardown and crashing with "window is not defined"
+    // Fake timers keep the load-event TTI timeout from firing after teardown
     clock = sinon.useFakeTimers();
     resetWebVitals();
 
@@ -122,6 +123,17 @@ describe('RUMCollector', function () {
 
       collector._checkThreshold('fid', 200);
       expect(collector.metrics.fidRating).to.equal('needs-improvement');
+    });
+
+    it('keeps one warning per metric when it is reported repeatedly', function () {
+      collector._checkThreshold('cls', 0.3);
+      collector._checkThreshold('cls', 0.35);
+      collector._checkThreshold('lcp', 5000);
+      expect(collector.warnings.map(w => w.metric)).to.deep.equal(['cls', 'lcp']);
+      expect(collector.warnings[0].value).to.equal(0.35);
+
+      collector._checkThreshold('cls', 0.05);
+      expect(collector.warnings.map(w => w.metric)).to.deep.equal(['lcp']);
     });
 
     it('ignores unknown metric names', function () {
@@ -281,6 +293,81 @@ describe('RUMCollector', function () {
       collector.metrics = { ttfb: 500, lcp: 2000 };
 
       expect(() => collector._sendMeasurements()).to.not.throw();
+    });
+  });
+
+  // ==========================================
+  // send triggers
+  // ==========================================
+  describe('send triggers', function () {
+
+    const hide = () => {
+      const handler = document.addEventListener.getCalls()
+        .filter(c => c.args[0] === 'visibilitychange').pop().args[1];
+      document.visibilityState = 'hidden';
+      try { handler(); } finally { document.visibilityState = 'visible'; }
+    };
+
+    it('subscribes CLS and LCP with reportAllChanges so values are current at hide', function () {
+      const onCLS = sinon.spy(webVitals, 'onCLS');
+      const onLCP = sinon.spy(webVitals, 'onLCP');
+      new RUMCollector(mockSessionManager, mockBrowserContext, { trackUserActions: false });
+      expect(onCLS.firstCall.args[1]).to.deep.equal({ reportAllChanges: true });
+      expect(onLCP.firstCall.args[1]).to.deep.equal({ reportAllChanges: true });
+    });
+
+    it('waits for page hide instead of a 10s timer, and sends CLS 0', function () {
+      const callback = sinon.stub();
+      collector.onMeasurement(callback);
+      _triggerMetric('ttfb', 100);
+      _triggerMetric('fcp', 500);
+      _triggerMetric('lcp', 900);
+      _triggerMetric('fid', 10);
+      _triggerMetric('cls', 0);
+
+      clock.tick(30000);
+      expect(callback.called).to.be.false;
+
+      hide();
+      expect(callback.calledOnce).to.be.true;
+      expect(callback.firstCall.args[0].cls).to.equal(0);
+      expect(callback.firstCall.args[0].lcp).to.equal(900);
+    });
+
+    it('attributes the measurement to the landing page, not the current SPA route', function () {
+      const callback = sinon.stub();
+      collector.onMeasurement(callback);
+      collector.metrics = { ttfb: 100, fcp: 500 };
+      window.location.pathname = '/other-route';
+      try {
+        hide();
+      } finally {
+        window.location.pathname = '/test';
+      }
+      expect(callback.firstCall.args[0].page).to.equal('/test');
+    });
+
+    it('strips query and hash from referrer and resource URLs', function () {
+      document.referrer = 'https://accounts.example.com/cb?code=SECRET#state';
+      const originalGetEntries = performance.getEntriesByType;
+      performance.getEntriesByType = (type) => type === 'resource' ? [{
+        name: 'https://bucket.s3.amazonaws.com/a.png?X-Amz-Signature=SECRET',
+        duration: 5, initiatorType: 'img', transferSize: 1
+      }] : [];
+      try {
+        const c = new RUMCollector(mockSessionManager, mockBrowserContext, { trackUserActions: false });
+        const callback = sinon.stub();
+        c.onMeasurement(callback);
+        c.metrics.ttfb = 100;
+        c.metrics.fcp = 500;
+        c._sendMeasurements();
+        const m = callback.firstCall.args[0];
+        expect(m.referrer).to.equal('https://accounts.example.com/cb');
+        expect(m.slowestResources[0].name).to.equal('https://bucket.s3.amazonaws.com/a.png');
+      } finally {
+        document.referrer = '';
+        performance.getEntriesByType = originalGetEntries;
+      }
     });
   });
 

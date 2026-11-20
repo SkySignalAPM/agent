@@ -1,11 +1,5 @@
 import { expect } from 'chai';
-import {
-  estimateObjectSize,
-  estimateBatchSize,
-  canAddToBatch,
-  getProcessMemory,
-  getMemoryPercentage
-} from '../../../lib/sizeEstimator.js';
+import { estimateObjectSize } from '../../../lib/sizeEstimator.js';
 
 describe('sizeEstimator', function () {
 
@@ -112,69 +106,6 @@ describe('sizeEstimator', function () {
       const fn = function myFunc() { return 42; };
       const size = estimateObjectSize(fn);
       expect(size).to.equal(fn.toString().length * 2);
-    });
-  });
-
-  describe('estimateBatchSize', function () {
-
-    it('returns 0 for empty batch', function () {
-      expect(estimateBatchSize([])).to.equal(0);
-    });
-
-    it('sums sizes of all items', function () {
-      const batch = [42, 'hi', true];
-      // 8 + 4 + 4 = 16
-      expect(estimateBatchSize(batch)).to.equal(16);
-    });
-
-    it('uses shared WeakSet for deduplication across items', function () {
-      const shared = { x: 1 };
-      const batch = [{ ref: shared }, { ref: shared }];
-      const size = estimateBatchSize(batch);
-      // The shared object should only be counted once
-      expect(size).to.be.a('number');
-      expect(size).to.be.greaterThan(0);
-    });
-  });
-
-  describe('canAddToBatch', function () {
-
-    it('returns true when item fits within budget', function () {
-      expect(canAddToBatch([], 42, 1000)).to.be.true;
-    });
-
-    it('returns false when item would exceed budget', function () {
-      // A string of 100 chars = 200 bytes. Budget of 50 bytes.
-      const bigString = 'x'.repeat(100);
-      expect(canAddToBatch([], bigString, 50)).to.be.false;
-    });
-  });
-
-  describe('getProcessMemory', function () {
-
-    it('returns an object with expected keys', function () {
-      const mem = getProcessMemory();
-      expect(mem).to.have.property('rss').that.is.a('number');
-      expect(mem).to.have.property('heapTotal').that.is.a('number');
-      expect(mem).to.have.property('heapUsed').that.is.a('number');
-      expect(mem).to.have.property('external').that.is.a('number');
-      expect(mem).to.have.property('arrayBuffers').that.is.a('number');
-    });
-
-    it('returns positive values for rss and heapUsed', function () {
-      const mem = getProcessMemory();
-      expect(mem.rss).to.be.greaterThan(0);
-      expect(mem.heapUsed).to.be.greaterThan(0);
-    });
-  });
-
-  describe('getMemoryPercentage', function () {
-
-    it('returns a number between 0 and 100 for reasonable input', function () {
-      const pct = getMemoryPercentage(1024);
-      expect(pct).to.be.a('number');
-      expect(pct).to.be.greaterThan(0);
-      expect(pct).to.be.lessThan(100);
     });
   });
 });

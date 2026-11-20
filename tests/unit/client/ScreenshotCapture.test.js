@@ -170,11 +170,16 @@ describe('ScreenshotCapture', function () {
       expect(c.config.debug).to.be.true;
     });
 
-    it('allows custom redactSelectors', function () {
+    it('adds custom redactSelectors to the defaults instead of replacing them', function () {
       const c = new ScreenshotCapture({
         redactSelectors: ['.my-custom-class']
       });
-      expect(c.config.redactSelectors).to.deep.equal(['.my-custom-class']);
+      expect(c.config.redactSelectors).to.include('.my-custom-class');
+      expect(c.config.redactSelectors).to.include('input[type="password"]');
+    });
+
+    it('keeps samplingRate 0 (no screenshots) instead of defaulting to 100', function () {
+      expect(new ScreenshotCapture({ samplingRate: 0 }).config.samplingRate).to.equal(0);
     });
 
     it('allows custom screenshotOnErrorTypes', function () {
