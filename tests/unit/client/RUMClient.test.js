@@ -9,7 +9,10 @@ import RUMClient from '../../../client/RUMClient.js';
 
 describe('RUMClient', function () {
 
+  let originalBlob;
+
   before(function () {
+    originalBlob = global.Blob;
     setupBrowserMocks();
     // Add document.addEventListener stub
     global.document.addEventListener = sinon.stub();
@@ -23,7 +26,7 @@ describe('RUMClient', function () {
   });
 
   after(function () {
-    delete global.Blob;
+    global.Blob = originalBlob; // deleting would remove Node's native Blob for later test files
     teardownBrowserMocks();
   });
 
