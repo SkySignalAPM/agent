@@ -153,9 +153,11 @@ describe('UserActionTracker', function () {
       expect(tracker._getElementText(elem).length).to.equal(50);
     });
 
-    it('falls back to value', function () {
-      const elem = { value: 'input value' };
-      expect(tracker._getElementText(elem)).to.equal('input value');
+    it('never records typed values or text of form controls', function () {
+      expect(tracker._getElementText({ value: 'hunter2' })).to.equal('');
+      expect(tracker._getElementText({ tagName: 'INPUT', type: 'password', value: 'hunter2' })).to.equal('');
+      expect(tracker._getElementText({ tagName: 'TEXTAREA', textContent: 'draft', value: 'typed' })).to.equal('');
+      expect(tracker._getElementText({ tagName: 'SELECT', textContent: 'Opt A Opt B' })).to.equal('');
     });
 
     it('returns empty string for no text', function () {
@@ -293,6 +295,97 @@ describe('UserActionTracker', function () {
 
       expect(tracker.pendingDeadClicks.get('dc1').detected).to.be.true;
       expect(tracker.pendingDeadClicks.get('dc2').detected).to.be.true;
+    });
+  });
+
+  // ==========================================
+  // dead click detection via MutationObserver
+  // ==========================================
+  describe('dead click detection', function () {
+    let clock;
+    let observers;
+    const saved = {};
+
+    beforeEach(function () {
+      clock = sinon.useFakeTimers();
+      observers = [];
+      for (const k of ['MutationObserver', 'document']) saved[k] = Object.getOwnPropertyDescriptor(global, k);
+      global.MutationObserver = class {
+        constructor(cb) {
+          this.cb = cb;
+          this.observe = sinon.spy();
+          this.disconnect = sinon.spy();
+          observers.push(this);
+        }
+      };
+      global.document = { body: {} };
+      tracker.config.enabled = true;
+    });
+
+    afterEach(function () {
+      clock.restore();
+      for (const k of ['MutationObserver', 'document']) {
+        if (saved[k]) Object.defineProperty(global, k, saved[k]);
+        else delete global[k];
+      }
+    });
+
+    const click = () => tracker._handleClick({ target: { tagName: 'BUTTON' }, pageX: 0, pageY: 0 });
+
+    it('observes only while a click is pending and marks unanswered clicks dead', function () {
+      expect(observers).to.be.empty;
+      click();
+      expect(observers).to.have.lengthOf(1);
+      expect(observers[0].observe.calledOnce).to.be.true;
+
+      clock.tick(2000);
+      expect(tracker.actions[0].isDeadClick).to.be.true;
+      expect(observers[0].disconnect.calledOnce).to.be.true;
+      expect(tracker._mutationObserver).to.be.null;
+    });
+
+    it('does not mark a click dead when the DOM changes', function () {
+      click();
+      observers[0].cb([]);
+      expect(observers[0].disconnect.calledOnce).to.be.true;
+
+      clock.tick(2000);
+      expect(tracker.actions[0].isDeadClick).to.be.undefined;
+    });
+
+    it('skips dead click detection without MutationObserver', function () {
+      delete global.MutationObserver;
+      click();
+      clock.tick(2000);
+      expect(tracker.actions[0].isDeadClick).to.be.undefined;
+    });
+  });
+
+  // ==========================================
+  // form submit
+  // ==========================================
+  describe('_handleFormSubmit', function () {
+    const saved = {};
+
+    beforeEach(function () {
+      saved.window = Object.getOwnPropertyDescriptor(global, 'window');
+      global.window = { location: { href: 'https://app.example.com/login?next=/x#frag' } };
+      tracker.config.enabled = true;
+    });
+
+    afterEach(function () {
+      if (saved.window) Object.defineProperty(global, 'window', saved.window);
+      else delete global.window;
+    });
+
+    it('strips query and hash from form action', function () {
+      tracker._handleFormSubmit({ target: { tagName: 'FORM', action: 'https://app.example.com/reset?token=SECRET#t', method: 'post' } });
+      expect(tracker.actions[0].formAction).to.equal('https://app.example.com/reset');
+    });
+
+    it('falls back to the stripped page URL when action is shadowed by a field', function () {
+      tracker._handleFormSubmit({ target: { tagName: 'FORM', action: { tagName: 'INPUT' } } });
+      expect(tracker.actions[0].formAction).to.equal('https://app.example.com/login');
     });
   });
 

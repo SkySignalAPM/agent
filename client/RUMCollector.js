@@ -14,6 +14,7 @@
 
 import { onCLS, onFID, onLCP, onFCP, onTTFB } from 'web-vitals';
 import UserActionTracker from './UserActionTracker';
+import stripUrl from './stripUrl';
 
 export default class RUMCollector {
 	constructor(sessionManager, browserContext, config = {}) {
@@ -23,6 +24,9 @@ export default class RUMCollector {
 		this.callbacks = [];
 		this.sent = false;
 		this.warnings = [];
+		// Page-load vitals belong to the landing page, not to whatever SPA route
+		// is current when the page is finally hidden
+		this.page = window.location.pathname;
 
 		// Performance thresholds (PageSpeed-style)
 		this.thresholds = {
@@ -50,10 +54,12 @@ export default class RUMCollector {
 	 * @private
 	 */
 	_startCollection() {
-		// Collect Core Web Vitals from web-vitals library
-		onCLS((metric) => this._handleMetric('cls', metric));
+		// Collect Core Web Vitals from web-vitals library. reportAllChanges keeps
+		// CLS/LCP current, so whichever hide/unload listener runs first sends
+		// up-to-date values instead of racing web-vitals' own final report.
+		onCLS((metric) => this._handleMetric('cls', metric), { reportAllChanges: true });
 		onFID((metric) => this._handleMetric('fid', metric));
-		onLCP((metric) => this._handleMetric('lcp', metric));
+		onLCP((metric) => this._handleMetric('lcp', metric), { reportAllChanges: true });
 		onFCP((metric) => this._handleMetric('fcp', metric));
 		onTTFB((metric) => this._handleMetric('ttfb', metric));
 
@@ -63,7 +69,7 @@ export default class RUMCollector {
 		// Collect resource timing
 		this._collectResourceTiming();
 
-		// Send measurements on visibility change or after timeout
+		// Send measurements when the page is hidden or unloaded
 		this._setupSendTriggers();
 	}
 
@@ -77,9 +83,6 @@ export default class RUMCollector {
 
 		// Generate warnings for poor performance
 		this._checkThreshold(name, value);
-
-		// Check if we have enough metrics to send
-		this._checkReadyToSend();
 	}
 
 	/**
@@ -131,7 +134,7 @@ export default class RUMCollector {
 			// Calculate duration for each resource and sort by slowest
 			const slowestResources = resources
 				.map(resource => ({
-					name: resource.name,
+					name: stripUrl(resource.name),
 					duration: resource.duration,
 					type: resource.initiatorType,
 					size: resource.transferSize || 0
@@ -168,6 +171,11 @@ export default class RUMCollector {
 			message = this._getWarningMessage(metricName, value, 'needs-improvement');
 		}
 
+		// CLS/LCP report repeatedly; keep one warning per metric and only log
+		// when the rating changes
+		const previousRating = this.metrics[`${metricName}Rating`];
+		this.warnings = this.warnings.filter(w => w.metric !== metricName);
+
 		// Store rating
 		this.metrics[`${metricName}Rating`] = rating;
 
@@ -182,7 +190,7 @@ export default class RUMCollector {
 			});
 
 			// Log to console (PageSpeed-style warning)
-			console.warn(`[SkySignal RUM] ${message}`);
+			if (rating !== previousRating) console.warn(`[SkySignal RUM] ${message}`);
 		}
 	}
 
@@ -242,13 +250,6 @@ export default class RUMCollector {
 		window.addEventListener('beforeunload', () => {
 			this._sendMeasurements();
 		});
-
-		// Send after 10 seconds if we have core metrics
-		setTimeout(() => {
-			if (this._hasMinimumMetrics() && !this.sent) {
-				this._sendMeasurements();
-			}
-		}, 10000);
 	}
 
 	/**
@@ -256,23 +257,9 @@ export default class RUMCollector {
 	 * @private
 	 */
 	_hasMinimumMetrics() {
-		// We need at least TTFB and one other Core Web Vital
-		return this.metrics.ttfb && (this.metrics.lcp || this.metrics.fcp || this.metrics.fid);
-	}
-
-	/**
-	 * Check if ready to send (all metrics collected or timeout)
-	 * @private
-	 */
-	_checkReadyToSend() {
-		// If we have all Core Web Vitals, send immediately
-		const hasCoreMetrics = this.metrics.lcp && this.metrics.fid && this.metrics.cls &&
-		                       this.metrics.ttfb && this.metrics.fcp;
-
-		if (hasCoreMetrics && !this.sent) {
-			// Small delay to allow TTI to be calculated
-			setTimeout(() => this._sendMeasurements(), 200);
-		}
+		// We need at least TTFB and one other Core Web Vital (0 is a real value)
+		const has = (name) => this.metrics[name] != null;
+		return has('ttfb') && (has('lcp') || has('fcp') || has('fid'));
 	}
 
 	/**
@@ -322,8 +309,8 @@ export default class RUMCollector {
 			...context,
 			userId: this.browserContext.getUserId(),
 			sessionId: this.sessionManager.getSessionId(),
-			page: window.location.pathname,
-			referrer: document.referrer || null,
+			page: this.page,
+			referrer: stripUrl(document.referrer) || null,
 
 			// Warnings
 			warnings: this.warnings.length > 0 ? this.warnings : undefined,

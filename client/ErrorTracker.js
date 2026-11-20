@@ -63,6 +63,13 @@
  */
 
 import ScreenshotCapture from './ScreenshotCapture';
+import stripUrl from './stripUrl';
+
+// Each distinct error fingerprint is sent at most once per window, and at
+// most MAX_ERRORS_PER_WINDOW distinct errors per window, so an error thrown
+// from a rAF/interval loop can't flood beacons or html2canvas.
+const RATE_WINDOW_MS = 60 * 1000;
+const MAX_ERRORS_PER_WINDOW = 10;
 
 export default class ErrorTracker {
 	/**
@@ -106,8 +113,8 @@ export default class ErrorTracker {
 				enabled: true,
 				quality: config.screenshotQuality || 0.7,
 				maxSize: config.maxScreenshotSize || 500 * 1024, // 500KB
-				samplingRate: config.screenshotSamplingRate || 100, // Capture 100% by default, can be reduced
-				redactSelectors: config.redactSelectors, // Use defaults if not provided
+				samplingRate: config.screenshotSamplingRate ?? 100, // 0 is valid (no screenshots)
+				redactSelectors: config.redactSelectors, // Added to the default redaction list
 				screenshotOnErrorTypes: config.screenshotOnErrorTypes || [],
 				debug: config.debug
 			});
@@ -115,8 +122,11 @@ export default class ErrorTracker {
 
 		// Track initialization state
 		this.initialized = false;
-		this.errorQueue = [];
+		// An object, not a number: rum-client Object.assign()s this tracker onto the
+		// exported singleton, and only shared references stay in sync.
+		this.sendStats = { failed: 0 };
 		this.pendingErrors = new Set();
+		this.recentErrors = new Map(); // fingerprint -> last send time
 	}
 
 	/**
@@ -211,7 +221,7 @@ export default class ErrorTracker {
 					lineno: event.lineno,
 					colno: event.colno,
 					timestamp: new Date(),
-					url: window.location.href,
+					url: stripUrl(window.location.href),
 					userAgent: navigator.userAgent
 				});
 			} catch (err) {
@@ -239,7 +249,7 @@ export default class ErrorTracker {
 					message,
 					stack: reason?.stack,
 					timestamp: new Date(),
-					url: window.location.href,
+					url: stripUrl(window.location.href),
 					userAgent: navigator.userAgent
 				});
 			} catch (err) {
@@ -268,7 +278,7 @@ export default class ErrorTracker {
 					type: 'ConsoleError',
 					message: args.map(arg => self._serializeArg(arg)).join(' '),
 					timestamp: new Date(),
-					url: window.location.href,
+					url: stripUrl(window.location.href),
 					userAgent: navigator.userAgent
 				});
 			} catch (err) {
@@ -419,6 +429,20 @@ export default class ErrorTracker {
 			return;
 		}
 
+		// Rate limit before the (expensive) screenshot. Pruning on every call
+		// keeps the map at most MAX_ERRORS_PER_WINDOW entries.
+		const now = Date.now();
+		for (const [fp, sentAt] of this.recentErrors) {
+			if (now - sentAt >= RATE_WINDOW_MS) this.recentErrors.delete(fp);
+		}
+		if (this.recentErrors.has(fingerprint) || this.recentErrors.size >= MAX_ERRORS_PER_WINDOW) {
+			if (this.config.debug) {
+				console.log('[SkySignal ErrorTracker] Rate limited error', error.message);
+			}
+			return;
+		}
+		this.recentErrors.set(fingerprint, now);
+
 		this.pendingErrors.add(fingerprint);
 
 		try {
@@ -488,7 +512,7 @@ export default class ErrorTracker {
 	 * Send an error payload to the SkySignal API.
 	 * Uses sendBeacon for small errors without screenshots (zero async overhead),
 	 * falls back to fetch with keepalive for large payloads or screenshots.
-	 * Failed requests are queued for retry.
+	 * Failed sends are dropped (counted in getStats().failedErrors).
 	 * @private
 	 * @param {Object} error - Complete error payload to send
 	 * @returns {Promise<void>}
@@ -554,8 +578,7 @@ export default class ErrorTracker {
 				console.error('[SkySignal ErrorTracker] Failed to send error', err);
 			}
 
-			// Queue for retry
-			this.errorQueue.push(error);
+			this.sendStats.failed++;
 		}
 	}
 
@@ -607,7 +630,7 @@ export default class ErrorTracker {
 			message: error?.message || String(error),
 			stack: error?.stack,
 			timestamp: new Date(),
-			url: window.location.href,
+			url: stripUrl(window.location.href),
 			userAgent: navigator.userAgent,
 			...context
 		});
@@ -617,27 +640,25 @@ export default class ErrorTracker {
 	 * Get statistics about the error tracker's state.
 	 *
 	 * Use this to monitor the health of error tracking and detect
-	 * issues like queued errors (network problems) or high pending
+	 * issues like failed sends (network problems) or high pending
 	 * counts (processing bottlenecks).
 	 *
 	 * @returns {Object} Statistics object
 	 * @returns {boolean} returns.initialized - Whether init() has been called
-	 * @returns {number} returns.queuedErrors - Errors waiting to be retried
+	 * @returns {number} returns.failedErrors - Errors that failed to send (dropped, not retried)
 	 * @returns {number} returns.pendingErrors - Errors currently being processed
 	 * @returns {Object} [returns.screenshots] - Screenshot capture stats (if enabled)
 	 *
 	 * @example
 	 * const stats = tracker.getStats();
-	 * console.log(`Queued errors: ${stats.queuedErrors}`);
-	 *
-	 * if (stats.queuedErrors > 10) {
-	 *   console.warn('Error queue growing - check network connectivity');
+	 * if (stats.failedErrors > 10) {
+	 *   console.warn('Error sends failing - check network connectivity');
 	 * }
 	 */
 	getStats() {
 		const stats = {
 			initialized: this.initialized,
-			queuedErrors: this.errorQueue.length,
+			failedErrors: this.sendStats.failed,
 			pendingErrors: this.pendingErrors.size
 		};
 

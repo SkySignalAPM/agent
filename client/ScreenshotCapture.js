@@ -17,8 +17,9 @@ export default class ScreenshotCapture {
 			enabled: config.enabled !== false,
 			quality: config.quality || 0.7, // JPEG quality 0-1
 			maxSize: config.maxSize || 500 * 1024, // Max 500KB
-			samplingRate: config.samplingRate || 100, // Percentage of errors to capture
-			redactSelectors: config.redactSelectors || this._getDefaultRedactionSelectors(),
+			samplingRate: config.samplingRate ?? 100, // Percentage of errors to capture (0 = none)
+			// User selectors extend the defaults; replacing them would unmask password fields
+			redactSelectors: [...new Set([...this._getDefaultRedactionSelectors(), ...(config.redactSelectors || [])])],
 			screenshotOnErrorTypes: config.screenshotOnErrorTypes || [
 				'Error',
 				'TypeError',

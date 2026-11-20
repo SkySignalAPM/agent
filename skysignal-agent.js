@@ -19,7 +19,7 @@ import VulnerabilityCollector from "./lib/collectors/VulnerabilityCollector.js";
 import MergeboxCollector from "./lib/collectors/MergeboxCollector.js";
 import JobCollector from "./lib/collectors/jobs/index.js";
 import SkySignalClient from "./lib/SkySignalClient.js";
-import { mergeConfig } from "./lib/config.js";
+import { mergeConfig, DEFAULT_CONFIG } from "./lib/config.js";
 import { trackAsync, trackAsyncBatch, makeTrackable, makeTrackableClass } from "./lib/utils/trackAsync.js";
 
 /**
@@ -79,82 +79,8 @@ import { trackAsync, trackAsyncBatch, makeTrackable, makeTrackableClass } from "
  */
 class SkySignalAgentClass {
 	constructor() {
-		this.config = {
-			apiKey: null,
-			endpoint: process.env.SKYSIGNAL_ENDPOINT || "https://dash.skysignal.app",
-			enabled: true,
-			debug: false, // Debug mode for verbose console logging
-			batchSize: 50,
-			flushInterval: 10000,
-			host: null,
-			appVersion: null, // App version from package.json for performance tracking
-			buildHash: null, // Build hash for source map lookup (Git SHA or timestamp)
-			collectSystemMetrics: true,
-			systemMetricsInterval: 60000,
-			collectTraces: true,
-			collectErrors: true,
-			collectMongoPool: true,
-			mongoPoolInterval: 60000, // 60s default
-			mongoPoolFixedConnectionMemory: null, // Optional: fixed bytes per connection
-			collectCollectionStats: true,
-			collectionStatsInterval: 300000, // 5 min default
-			collectDDPConnections: true,
-			ddpConnectionsInterval: 30000, // 30s default (send updates every 30s)
-			collectHttpRequests: true,
-			httpRequestsInterval: 10000, // 10s default (send batches every 10s)
-			httpSampleRate: 1.0, // Track 100% of HTTP requests by default
-			httpExcludePatterns: null, // Optional: custom exclude patterns (uses defaults if null)
-			collectLiveQueries: true,
-			liveQueriesInterval: 60000, // 60s default (send live query stats every minute)
-			liveQueriesPerformanceThresholds: null, // Optional: custom performance thresholds
-			captureIndexUsage: true, // Enable MongoDB explain() capture
-			indexUsageSampleRate: 0.05, // Explain 5% of queries by default
-			explainVerbosity: 'executionStats', // queryPlanner | executionStats | allPlansExecution
-			explainSlowQueriesOnly: false, // Only explain queries > slowQueryThreshold
-			// Job monitoring
-			collectJobs: true, // Enable background job monitoring
-			jobsInterval: 30000, // 30s default (send job stats every 30s)
-			jobsPackage: null, // Auto-detect by default, or specify: "msavin:sjobs"
-			// Log collection
-			collectLogs: true, // Enable log capturing
-			logLevels: ["info", "warn", "error", "fatal"],
-			logSampleRate: 1.0,
-			logMaxMessageLength: 10000,
-			logCaptureConsole: true,
-			logCaptureMeteorLog: true,
-			// DNS timing
-			collectDnsTimings: true,
-			dnsTimingsInterval: 60000, // 60s default
-			// Outbound HTTP (diagnostics_channel)
-			collectOutboundHttp: true,
-			outboundHttpInterval: 60000, // 60s default
-			// CPU profiling (on-demand)
-			collectCpuProfiles: true,
-			cpuProfileThreshold: 80, // CPU % to trigger profiling
-			cpuProfileDuration: 10000, // 10s profile
-			cpuProfileCooldown: 300000, // 5 min between profiles
-			cpuProfileCheckInterval: 30000, // Check CPU every 30s
-			// Deprecated API usage detection
-			collectDeprecatedApis: true,
-			deprecatedApisInterval: 300000, // 5 min
-			// Publication over-fetching detection
-			collectPublications: true,
-			publicationsInterval: 300000, // 5 min
-			// Environment metadata
-			collectEnvironment: true,
-			environmentInterval: 1800000, // 30 min
-			// Vulnerability scanning
-			collectVulnerabilities: true,
-			vulnerabilitiesInterval: 3600000, // 1 hour
-			// Mergebox RAM residency (ships dark — opt-in)
-			collectMergebox: false,
-			mergeboxInterval: 60000, // 60s default
-			mergeboxSampleRate: 1.0, // per-session sample rate
-			mergeboxMaxSessions: 2000, // cap sessions walked per tick
-			mergeboxMaxDocsPerSession: 50000, // cap docs walked per session per tick
-			// Aggregation ingest (reduces writes on Subscriptions / LiveQueries)
-			ingestAggregation: true
-		};
+		// State before configure(); DEFAULT_CONFIG is the single source of defaults.
+		this.config = { ...DEFAULT_CONFIG };
 
 		this.client = null;
 		this.collectors = {};
@@ -252,11 +178,12 @@ class SkySignalAgentClass {
 	 * @param {string} [options.appVersion] - Application version for tracking deployments (auto-detected from package.json)
 	 * @param {string} [options.buildHash] - Git SHA or build hash for source map lookup (reads BUILD_HASH or GIT_SHA env vars)
 	 *
-	 * @param {number} [options.batchSize=50] - Maximum items per batch before sending
-	 * @param {number} [options.batchSizeBytes=262144] - Maximum batch size in bytes (256KB default)
-	 * @param {number} [options.flushInterval=10000] - Milliseconds between automatic batch flushes
-	 * @param {number} [options.requestTimeout=3000] - HTTP request timeout in milliseconds
+	 * @param {number} [options.batchSize=100] - Maximum items per batch before sending
+	 * @param {number} [options.batchSizeBytes=1048576] - Maximum batch size in bytes (1MB default)
+	 * @param {number} [options.flushInterval=60000] - Milliseconds between automatic batch flushes
+	 * @param {number} [options.requestTimeout=30000] - HTTP request timeout in milliseconds
 	 * @param {number} [options.maxBatchRetries=3] - Maximum retry attempts for failed batches
+	 * @param {number} [options.maxMemoryMB=50] - Cap (MB) on request bodies in flight or awaiting retry; new batches are dropped above it
 	 *
 	 * @param {boolean} [options.collectSystemMetrics=true] - Collect CPU, memory, disk, network metrics
 	 * @param {number} [options.systemMetricsInterval=60000] - System metrics collection interval (ms)
@@ -265,6 +192,7 @@ class SkySignalAgentClass {
 	 * @param {number} [options.traceSampleRate=1.0] - Sampling rate for traces (0.0 to 1.0)
 	 *
 	 * @param {boolean} [options.collectErrors=true] - Capture server-side errors
+	 * @param {boolean} [options.traceMethodArguments=true] - Capture sanitized method arguments in traces
 	 *
 	 * @param {boolean} [options.collectMongoPool=true] - Monitor MongoDB connection pool
 	 * @param {number} [options.mongoPoolInterval=60000] - Pool metrics collection interval (ms)
@@ -273,19 +201,19 @@ class SkySignalAgentClass {
 	 * @param {number} [options.collectionStatsInterval=300000] - Collection stats interval (5 min default)
 	 *
 	 * @param {boolean} [options.collectDDPConnections=true] - Monitor WebSocket/DDP connections
-	 * @param {number} [options.ddpConnectionsInterval=30000] - DDP metrics interval (ms)
+	 * @param {number} [options.ddpConnectionsInterval=60000] - DDP metrics interval (ms)
 	 *
 	 * @param {boolean} [options.collectHttpRequests=true] - Track HTTP request/response metrics
 	 * @param {number} [options.httpRequestsInterval=10000] - HTTP metrics batch interval (ms)
 	 * @param {number} [options.httpSampleRate=1.0] - Sampling rate for HTTP requests (0.0 to 1.0)
-	 * @param {RegExp[]} [options.httpExcludePatterns] - URL patterns to exclude from tracking
+	 * @param {Array<RegExp|string>} [options.httpExcludePatterns] - URL patterns to exclude from tracking
 	 *
 	 * @param {boolean} [options.collectLiveQueries=true] - Monitor reactive query observers
 	 * @param {number} [options.liveQueriesInterval=60000] - Live queries metrics interval (ms)
 	 *
 	 * @param {boolean} [options.captureIndexUsage=true] - Run explain() to capture index usage
-	 * @param {number} [options.indexUsageSampleRate=0.05] - Sampling rate for explain() (5% default)
-	 * @param {string} [options.explainVerbosity="executionStats"] - MongoDB explain verbosity level
+	 * @param {number} [options.indexUsageSampleRate=0.01] - Sampling rate for explain() (1% default)
+	 * @param {string} [options.explainVerbosity="queryPlanner"] - MongoDB explain verbosity level
 	 *
 	 * @param {boolean} [options.collectJobs=true] - Monitor background jobs
 	 * @param {number} [options.jobsInterval=30000] - Job metrics interval (ms)
@@ -322,6 +250,12 @@ class SkySignalAgentClass {
 	 * });
 	 */
 	configure(options = {}) {
+		// Running collectors hold the current client; swapping it would orphan them.
+		if (this.started) {
+			this._warn("configure() ignored while the agent is running - call stop() first");
+			return;
+		}
+
 		this.config = mergeConfig(options);
 
 		if (!this.config.host) {
@@ -338,7 +272,21 @@ class SkySignalAgentClass {
 			this.config.buildHash = this._detectBuildHash();
 		}
 
-		this.client = new SkySignalClient({
+		if (this.client) this.client.stop(); // clear the old client's flush timer
+		this.client = this._createClient();
+
+		this._log("Agent configured for host:", this.config.host);
+		if (this.config.appVersion && this.config.appVersion !== "unknown") {
+			this._log("App version:", this.config.appVersion);
+		}
+		if (this.config.buildHash) {
+			this._log("Build hash:", this.config.buildHash.substring(0, 12) + "...");
+		}
+	}
+
+	/** @private */
+	_createClient() {
+		return new SkySignalClient({
 			apiKey: this.config.apiKey,
 			endpoint: this.config.endpoint,
 			batchSize: this.config.batchSize,
@@ -348,16 +296,9 @@ class SkySignalAgentClass {
 			rumSampleRate: this.config.rumSampleRate,
 			requestTimeout: this.config.requestTimeout,
 			maxBatchRetries: this.config.maxBatchRetries,
+			maxMemoryMB: this.config.maxMemoryMB,
 			debug: this.config.debug
 		});
-
-		this._log("Agent configured for host:", this.config.host);
-		if (this.config.appVersion && this.config.appVersion !== "unknown") {
-			this._log("App version:", this.config.appVersion);
-		}
-		if (this.config.buildHash) {
-			this._log("Build hash:", this.config.buildHash.substring(0, 12) + "...");
-		}
 	}
 
 	/**
@@ -424,6 +365,11 @@ class SkySignalAgentClass {
 			return;
 		}
 
+		// stop() leaves the client permanently stopped; a restart needs a fresh one.
+		if (!this.client || this.client.stopped) {
+			this.client = this._createClient();
+		}
+
 		// Reset stagger index for clean start
 		this._staggerIndex = 0;
 
@@ -452,6 +398,8 @@ class SkySignalAgentClass {
 				appVersion: this.config.appVersion,
 				buildHash: this.config.buildHash,
 				enabled: this.config.collectTraces,
+				traceMethodArguments: this.config.traceMethodArguments,
+				collectErrors: this.config.collectErrors,
 				maxArgLength: this.config.maxArgLength,
 				captureIndexUsage: this.config.captureIndexUsage,
 				indexUsageSampleRate: this.config.indexUsageSampleRate,
@@ -757,7 +705,6 @@ class SkySignalAgentClass {
 					client: this.client,
 					host: this.config.host,
 					appVersion: this.config.appVersion,
-					interval: this.config.vulnerabilitiesInterval,
 					debug: this.config.debug
 				});
 				setTimeout(() => {
@@ -1175,6 +1122,35 @@ class SkySignalAgentClass {
 	}
 
 	/**
+	 * Signal handler: stop + flush, then make sure the process still exits.
+	 * Any signal listener disables Node's default exit-on-signal, so if ours was
+	 * the only one we re-raise the signal once the final flush has had a chance.
+	 * If the host app has its own handler, exiting is its job and we don't re-raise.
+	 * @private
+	 */
+	async _handleShutdownSignal(signal, proc = process, flushWaitMs = 3000) {
+		// Count before any await, while other listeners are still attached.
+		const reRaise = proc.listenerCount(signal) === 0;
+
+		try {
+			if (this.started) {
+				this.stop();
+				console.log("[SkySignal] Agent stopped (graceful shutdown)");
+			}
+		} catch (error) {
+			this._warn("Error during shutdown:", error.message); // must not block the exit below
+		}
+
+		if (!reRaise) return;
+
+		const deadline = Date.now() + flushWaitMs;
+		while (this.client && this.client.inFlightBytes > 0 && Date.now() < deadline) {
+			await new Promise(resolve => setTimeout(resolve, 50));
+		}
+		proc.kill(proc.pid, signal);
+	}
+
+	/**
 	 * Auto-detect the server hostname.
 	 * Uses Node.js os.hostname() to get the machine name.
 	 * @private
@@ -1493,17 +1469,9 @@ if (Meteor.isServer) {
 
 			// Graceful shutdown: stop collectors and flush final data when the
 			// host app is shutting down (e.g., new deployment on Galaxy).
-			// We only register once and don't call process.exit() — the host
-			// process (or platform) manages the actual exit.
-			const shutdownAgent = () => {
-				if (agent.started) {
-					agent.stop();
-					console.log("[SkySignal] Agent stopped (graceful shutdown)");
-				}
-			};
-
-			process.once("SIGTERM", shutdownAgent);
-			process.once("SIGINT", shutdownAgent);
+			// Prepended so the host's own handlers (even `once` ones) are still attached when we count them.
+			process.prependOnceListener("SIGTERM", (sig) => agent._handleShutdownSignal(sig));
+			process.prependOnceListener("SIGINT", (sig) => agent._handleShutdownSignal(sig));
 		} catch (error) {
 			console.error("[SkySignal] Failed to auto-start:", error.message);
 		}

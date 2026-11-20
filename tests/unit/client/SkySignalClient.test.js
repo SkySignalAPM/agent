@@ -82,7 +82,7 @@ describe('SkySignalClient', function () {
 
     it('initializes stats to zero', function () {
       expect(client.stats).to.deep.equal({
-        sent: 0, failed: 0, sampled: 0, bytesSent: 0
+        sent: 0, failed: 0, sampled: 0, bytesSent: 0, dropped: 0
       });
     });
 
@@ -151,9 +151,18 @@ describe('SkySignalClient', function () {
       expect(client._safeStringify('hello')).to.equal('"hello"');
     });
 
-    it('returns null on non-serializable input', function () {
-      // BigInt throws in JSON.stringify
-      const result = client._safeStringify({ val: BigInt(123) });
+    it('serializes BigInt as a string', function () {
+      expect(client._safeStringify({ val: BigInt(123) })).to.equal('{"val":"123"}');
+    });
+
+    it('does not flag a shared (non-circular) object as [Circular]', function () {
+      const shared = { x: 1 };
+      const result = client._safeStringify({ a: shared, b: shared, n: BigInt(1) });
+      expect(JSON.parse(result)).to.deep.equal({ a: { x: 1 }, b: { x: 1 }, n: '1' });
+    });
+
+    it('returns null when serialization still fails', function () {
+      const result = client._safeStringify({ toJSON() { throw new Error('nope'); } });
       expect(result).to.be.null;
     });
   });
@@ -422,9 +431,20 @@ describe('SkySignalClient', function () {
       expect(client.retryQueues.traces[0].batch).to.deep.equal(batch);
     });
 
-    it('increments stats.failed', function () {
-      client._handleFailedBatch('traces', [{ a: 1 }, { a: 2 }], 0);
+    it('counts stats.failed once per batch, when it is finally dropped', function () {
+      const batch = [{ a: 1 }, { a: 2 }];
+      client._handleFailedBatch('traces', batch, 0);
+      client._handleFailedBatch('traces', batch, 1);
+      client._handleFailedBatch('traces', batch, 2);
+      expect(client.stats.failed).to.equal(0);
+      client._handleFailedBatch('traces', batch, 3);
       expect(client.stats.failed).to.equal(2);
+    });
+
+    it('drops non-retryable failures without queueing a retry', function () {
+      client._handleFailedBatch('traces', [{ a: 1 }], 0, 0, false);
+      expect(client.retryQueues.traces).to.have.lengthOf(0);
+      expect(client.stats.failed).to.equal(1);
     });
 
     it('drops batch when retryCount >= maxRetries', function () {
@@ -448,11 +468,12 @@ describe('SkySignalClient', function () {
       expect(client.retryQueues.traces[99].batch[0].id).to.equal('new');
     });
 
-    it('does not schedule retry timer when stopped', function () {
+    it('does not queue a retry when stopped', function () {
       client.stopped = true;
       client._handleFailedBatch('traces', [{ a: 1 }], 0);
-      // Should still add to retry queue, but not schedule timer
-      expect(client.retryQueues.traces).to.have.lengthOf(1);
+      // A stopped client never sends again, so the batch is dropped
+      expect(client.retryQueues.traces).to.have.lengthOf(0);
+      expect(client.stats.failed).to.equal(1);
       expect(client.pendingTimers.size).to.equal(0);
     });
 
@@ -516,6 +537,15 @@ describe('SkySignalClient', function () {
 
       client.stop();
       expect(client.pendingTimers.size).to.equal(0);
+    });
+
+    it('releases bytes held by queued retries (they will never be sent)', function () {
+      client.inFlightBytes = 30;
+      client.retryQueues.traces.push({ batch: [{ a: 1 }, { a: 2 }], retryCount: 1, bytes: 30 });
+      client.stop();
+      expect(client.inFlightBytes).to.equal(0);
+      expect(client.retryQueues.traces).to.have.lengthOf(0);
+      expect(client.stats.failed).to.equal(2);
     });
 
     it('is idempotent (safe to call multiple times)', function () {
@@ -740,12 +770,15 @@ describe('SkySignalClient', function () {
       expect(client.retryQueues.traces).to.have.lengthOf(0);
     });
 
-    it('handles serialization failure gracefully', function () {
-      // Push a batch with BigInt that will fail to serialize
-      client.retryQueues.traces.push({ batch: [{ val: BigInt(42) }], retryCount: 1 });
+    it('handles serialization failure gracefully and releases reserved bytes', function () {
+      const bad = { toJSON() { throw new Error('nope'); } };
+      client.inFlightBytes = 40;
+      client.retryQueues.traces.push({ batch: [bad], retryCount: 1, bytes: 40 });
 
       expect(() => client._retryBatch('traces')).to.not.throw();
       expect(client.retryQueues.traces).to.have.lengthOf(0);
+      expect(client.inFlightBytes).to.equal(0);
+      expect(client.stats.failed).to.equal(1);
     });
   });
 
@@ -788,10 +821,103 @@ describe('SkySignalClient', function () {
     });
 
     it('handles serialization failure and does not crash', function () {
-      client.batches.traces = [{ val: BigInt(123) }];
+      client.batches.traces = [{ toJSON() { throw new Error('nope'); } }];
       expect(() => client._sendBatch('traces', '/api/v1/traces')).to.not.throw();
       // Batch should still be cleared
       expect(client.batches.traces).to.have.lengthOf(0);
+      expect(client.stats.dropped).to.equal(1);
+    });
+
+    it('drops only the unserializable item, not the whole batch', async function () {
+      const send = sinon.stub(client, '_sendRequest').resolves();
+      client.batches.logs = [
+        { message: 'ok-1' },
+        { message: 'bad', toJSON() { throw new Error('nope'); } },
+        { message: 'ok-2', big: BigInt(7) }
+      ];
+
+      client._sendBatch('logs', '/api/v1/logs');
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(client.stats.dropped).to.equal(1);
+      const [, body, , batch] = send.firstCall.args;
+      expect(JSON.parse(body)).to.deep.equal({ logs: [{ message: 'ok-1' }, { message: 'ok-2', big: '7' }] });
+      expect(batch).to.have.lengthOf(2);
+    });
+  });
+
+  // ==========================================
+  // _sendRequest status handling + memory accounting
+  // ==========================================
+  describe('_sendRequest status handling', function () {
+
+    function respond(status) {
+      sinon.stub(client, '_postWithAuth').resolves({ status, bodyText: '', bytesSent: 10 });
+    }
+
+    for (const status of [400, 401, 413]) {
+      it(`drops a ${status} without retrying`, async function () {
+        respond(status);
+        client.inFlightBytes = 10;
+        await client._sendRequest('/api/v1/traces', '{}', 'traces', [{ a: 1 }], 10, 0);
+        expect(client.retryQueues.traces).to.have.lengthOf(0);
+        expect(client.stats.failed).to.equal(1);
+        expect(client.inFlightBytes).to.equal(0);
+      });
+    }
+
+    for (const status of [408, 429, 500, 503]) {
+      it(`retries a ${status}`, async function () {
+        respond(status);
+        client.inFlightBytes = 10;
+        await client._sendRequest('/api/v1/traces', '{}', 'traces', [{ a: 1 }], 10, 0);
+        expect(client.retryQueues.traces).to.have.lengthOf(1);
+        expect(client.stats.failed).to.equal(0);
+        expect(client.inFlightBytes).to.equal(10); // still held while awaiting retry
+      });
+    }
+
+    it('retries network errors', async function () {
+      sinon.stub(client, '_postWithAuth').rejects(new Error('ECONNRESET'));
+      await client._sendRequest('/api/v1/traces', '{}', 'traces', [{ a: 1 }], 10, 0);
+      expect(client.retryQueues.traces).to.have.lengthOf(1);
+    });
+
+    it('releases bytes and counts sent on success', async function () {
+      respond(202);
+      client.inFlightBytes = 10;
+      await client._sendRequest('/api/v1/traces', '{}', 'traces', [{ a: 1 }], 10, 0);
+      expect(client.stats.sent).to.equal(1);
+      expect(client.inFlightBytes).to.equal(0);
+    });
+  });
+
+  describe('maxMemoryMB cap', function () {
+
+    it('drops new batches while in-flight bodies exceed the cap', function () {
+      const capped = new SkySignalClient({
+        apiKey: 'k', endpoint: 'http://localhost:3000', batchSize: 50,
+        batchSizeBytes: 256 * 1024, flushInterval: 10000, maxBatchRetries: 3,
+        traceSampleRate: 1, maxMemoryMB: 100 / (1024 * 1024) // 100 bytes
+      });
+      sinon.stub(capped, '_sendRequest').returns(new Promise(() => {})); // never settles
+
+      capped.batches.logs = [{ message: 'x'.repeat(40) }];
+      capped._sendBatch('logs', '/api/v1/logs');
+      capped.batches.logs = [{ message: 'y'.repeat(40) }];
+      capped._sendBatch('logs', '/api/v1/logs');
+
+      expect(capped.stats.dropped).to.equal(1);
+      expect(capped.inFlightBytes).to.be.within(1, 100);
+      capped.stopped = true;
+      clearTimeout(capped.flushTimeoutId);
+    });
+  });
+
+  describe('keepAlive agent', function () {
+    it('uses the core http.Agent socket timeout option', function () {
+      expect(client._agent.options.timeout).to.equal(15000);
+      expect(client._agent.options).to.not.have.property('freeSocketTimeout');
     });
   });
 });

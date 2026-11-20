@@ -206,4 +206,27 @@ describe('MongoCollectionStatsCollector', function () {
       expect(result.indexes).to.have.lengthOf(1);
     });
   });
+  describe('_collectStats concurrency', function () {
+
+    it('queries collections one at a time', async function () {
+      const db = mockMongoClient.db();
+      db.listCollections.returns({ toArray: sinon.stub().resolves([{ name: 'a' }, { name: 'b' }, { name: 'c' }]) });
+      let inFlight = 0;
+      let maxInFlight = 0;
+      db.command = async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise(r => setImmediate(r));
+        inFlight--;
+        return { count: 1 };
+      };
+      collector.db = db;
+
+      await collector._collectStats();
+
+      expect(maxInFlight).to.equal(1);
+      expect(mockSkySignalClient.addCollectionStats.firstCall.args[0].collections.map(c => c.name))
+        .to.deep.equal(['a', 'b', 'c']);
+    });
+  });
 });

@@ -429,11 +429,11 @@ describe('LogsCollector', function () {
       expect(entry).to.not.have.property('metadata');
     });
 
-    it('resets _isCapturing flag even on error', function () {
+    it('swallows client errors and resets _isCapturing flag', function () {
       // Make addLog throw
       client.addLog = sinon.stub().throws(new Error('boom'));
 
-      expect(() => collector._captureLog('info', 'test', 'console')).to.throw();
+      expect(() => collector._captureLog('info', 'test', 'console')).to.not.throw();
       // Flag should be reset
       expect(collector._isCapturing).to.be.false;
     });
@@ -458,6 +458,20 @@ describe('LogsCollector', function () {
       // _wrapMeteorLog should not be called; no errors
       expect(() => collector.start()).to.not.throw();
       collector.stop();
+    });
+  });
+  describe('filter before format', function () {
+
+    it('does not serialize args for filtered levels or sampled-out logs', function () {
+      collector = new LogsCollector({ client, levels: ['error'], sampleRate: 0 });
+      const formatSpy = sinon.spy(collector, '_formatArgs');
+      collector.start();
+
+      console.log({ big: 'object' });   // level not captured
+      console.error({ big: 'object' }); // sampled out
+
+      expect(formatSpy.called).to.be.false;
+      expect(client.recorded.logs).to.have.lengthOf(0);
     });
   });
 });

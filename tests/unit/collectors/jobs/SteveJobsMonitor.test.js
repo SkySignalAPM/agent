@@ -399,4 +399,52 @@ describe('SteveJobsMonitor', function () {
       expect(() => monitor.cleanupHooks()).to.not.throw();
     });
   });
+  describe('setupHooks', function () {
+
+    it('replays only pending docs at startup, and reports their later completion', async function () {
+      let callbacks;
+      let findOptions;
+      const future = new Date(Date.now() + 3600000);
+      monitor.jobsCollection = {
+        find(selector, options) {
+          findOptions = options;
+          return {
+            async observe(cbs) {
+              callbacks = cbs;
+              cbs.added({ _id: 'old1', name: 'j', state: 'success', created: new Date() });
+              cbs.added({ _id: 'sched1', name: 'j', state: 'pending', due: future });
+              return { stop() {} };
+            }
+          };
+        }
+      };
+      const start = sinon.spy(monitor, 'trackJobStart');
+      const scheduled = sinon.spy(monitor, 'trackScheduledJob');
+      const complete = sinon.spy(monitor, 'trackJobComplete');
+
+      await monitor.setupHooks();
+      expect(start.called).to.be.false; // finished history is not replayed
+      expect(scheduled.calledOnce).to.be.true; // pending job still tracked
+      expect(findOptions.fields).to.include({ name: 1, state: 1 });
+
+      callbacks.changed(
+        { _id: 'sched1', name: 'j', state: 'success', due: future },
+        { _id: 'sched1', name: 'j', state: 'pending', due: future }
+      );
+      expect(complete.calledWith('sched1')).to.be.true;
+
+      callbacks.added({ _id: 'new1', name: 'j', state: 'pending', due: new Date(0) });
+      expect(start.called).to.be.true;
+    });
+
+    it('bounds the stalled-jobs query', async function () {
+      let options;
+      monitor.jobsCollection = {
+        find(sel, opts) { options = opts; return { fetchAsync: async () => [] }; }
+      };
+      await monitor._detectStalledJobs();
+      expect(options.limit).to.equal(100);
+      expect(options.fields).to.exist;
+    });
+  });
 });

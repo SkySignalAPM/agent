@@ -142,7 +142,7 @@ describe('DDPCollector', function () {
       expect(sub.errorMessage).to.equal('404: Not found');
     });
 
-    it('nosub with no error sets unknown message', function () {
+    it('nosub with no error is a server-side stop, not an error', function () {
       collector._trackSubscriptionMessage(
         { msg: 'sub', id: 'sub1', name: 'posts' },
         's1', 50
@@ -152,7 +152,53 @@ describe('DDPCollector', function () {
         's1', 30
       );
 
-      expect(collector.subscriptions.get('sub1').errorMessage).to.equal('Unknown error');
+      const sub = collector.subscriptions.get('sub1');
+      expect(sub.status).to.equal('stopped');
+      expect(sub.errorMessage).to.be.undefined;
+    });
+
+    it('nosub after a client unsub keeps the original stoppedAt', function () {
+      collector._trackSubscriptionMessage({ msg: 'sub', id: 'sub1', name: 'posts' }, 's1', 50);
+      collector._trackSubscriptionMessage({ msg: 'unsub', id: 'sub1' }, 's1', 20);
+      const stoppedAt = collector.subscriptions.get('sub1').stoppedAt;
+      collector._trackSubscriptionMessage({ msg: 'nosub', id: 'sub1' }, 's1', 30);
+
+      const sub = collector.subscriptions.get('sub1');
+      expect(sub.status).to.equal('stopped');
+      expect(sub.stoppedAt).to.equal(stoppedAt);
+    });
+
+    it('keeps the unsanitized server error from instrumentation publication.error', function () {
+      collector._trackSubscriptionMessage({ msg: 'sub', id: 'sub1', name: 'posts' }, 's1', 50);
+      collector._recordPublicationError({
+        subscriptionId: 'sub1', connectionId: 's1',
+        error: { name: 'TypeError', message: "Cannot read properties of undefined (reading 'x')" }
+      });
+      collector._trackSubscriptionMessage(
+        { msg: 'nosub', id: 'sub1', error: { error: 500, reason: 'Internal server error' } }, 's1', 30
+      );
+
+      const sub = collector.subscriptions.get('sub1');
+      expect(sub.status).to.equal('error');
+      expect(sub.errorMessage).to.equal("TypeError: Cannot read properties of undefined (reading 'x')");
+    });
+
+    it('ignores publication.error for a different connection', function () {
+      collector._trackSubscriptionMessage({ msg: 'sub', id: 'sub1', name: 'posts' }, 's1', 50);
+      collector._recordPublicationError({ subscriptionId: 'sub1', connectionId: 'other', error: { message: 'x' } });
+      expect(collector.subscriptions.get('sub1').errorMessage).to.be.undefined;
+    });
+
+    it('credits document messages only to subscriptions on the same connection', function () {
+      collector._trackSubscriptionMessage({ msg: 'sub', id: 'subA', name: 'posts' }, 'connA', 50);
+      collector._trackSubscriptionMessage({ msg: 'ready', subs: ['subA'] }, 'connA', 20);
+      collector._trackSubscriptionMessage({ msg: 'sub', id: 'subB', name: 'posts' }, 'connB', 50);
+      collector._trackSubscriptionMessage({ msg: 'ready', subs: ['subB'] }, 'connB', 20);
+
+      collector._trackSubscriptionMessage({ msg: 'added', collection: 'posts' }, 'connA', 80);
+
+      expect(collector.subscriptions.get('subA').documentsAdded).to.equal(1);
+      expect(collector.subscriptions.get('subB').documentsAdded).to.equal(0);
     });
 
     it('tracks "unsub" — marks subscription as stopped', function () {
@@ -367,6 +413,48 @@ describe('DDPCollector', function () {
       expect(collector.subscriptions.get('sub1').stoppedAt).to.equal(earlier);
       expect(collector.subscriptions.get('sub2').status).to.equal('stopped');
       expect(collector.subscriptions.get('sub2').stoppedAt).to.equal(earlier);
+    });
+
+    it('_wrapSession is idempotent (no double-counted messages)', function () {
+      collector.wrappedSessions = new Set();
+      const session = createMockSession('conn-idem');
+      session.send = () => {};
+      collector._wrapSession(session);
+      collector._wrapSession(session);
+
+      session.processMessage({ msg: 'method', id: '1', method: 'x', params: [] });
+      expect(collector.connections.get('conn-idem').messagesReceived).to.equal(1);
+    });
+
+    it('a stopped collector session wrappers pass through (restart creates a new collector)', function () {
+      collector.wrappedSessions = new Set();
+      const session = createMockSession('conn-old');
+      session.send = () => {};
+      collector._wrapSession(session);
+      collector.stop();
+
+      session.processMessage({ msg: 'sub', id: 'subOld', name: 'posts', params: [] });
+      expect(collector.subscriptions.size).to.equal(0);
+    });
+
+    it('wraps a session as soon as Meteor.onConnection fires (no poll delay)', function () {
+      const { Meteor } = require('../../helpers/meteorMock.js');
+      const hooks = [];
+      const original = Meteor.onConnection;
+      Meteor.onConnection = (cb) => { hooks.push(cb); return { stop() {} }; };
+      try {
+        collector._setupConnectionTracking();
+        const session = createMockSession('conn-early');
+        session.send = () => {};
+        Meteor.server.sessions.set('conn-early', session);
+        hooks.forEach((cb) => cb({ id: 'conn-early' }));
+
+        session.processMessage({ msg: 'sub', id: 'subE', name: 'posts', params: [] });
+        expect(collector.subscriptions.get('subE').publicationName).to.equal('posts');
+      } finally {
+        Meteor.onConnection = original;
+        Meteor.server.sessions.delete('conn-early');
+      }
     });
 
     it('reports a disconnected client\'s subscriptions as stopped, then reaps them, without any unsub', function () {

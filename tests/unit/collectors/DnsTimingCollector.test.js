@@ -185,11 +185,49 @@ describe('DnsTimingCollector', function () {
     });
 
     it('unwraps dns on stop', function () {
-      collector._originalLookup = () => {};
-      collector._originalResolve = () => {};
-      collector.stop();
-      expect(collector._originalLookup).to.be.null;
-      expect(collector._originalResolve).to.be.null;
+      const dns = require('dns');
+      const { lookup, resolve } = dns;
+      try {
+        collector._originalLookup = () => {};
+        collector._originalResolve = () => {};
+        collector.stop();
+        expect(collector._originalLookup).to.be.null;
+        expect(collector._originalResolve).to.be.null;
+      } finally {
+        dns.lookup = lookup; // don't leak the dummies into later tests
+        dns.resolve = resolve;
+      }
+    });
+  });
+  // ==========================================
+  // Wrapper transparency
+  // ==========================================
+  describe('dns.lookup wrapper', function () {
+
+    it('keeps util.promisify(dns.lookup) results and the original return value', async function () {
+      const dns = require('dns');
+      const util = require('util');
+      const realLookup = dns.lookup;
+      const syms = Object.getOwnPropertySymbols(realLookup);
+      expect(syms.length).to.be.greaterThan(0); // Node's customPromisifyArgs
+
+      const stub = function (host, opts, cb) {
+        setImmediate(() => cb(null, '1.2.3.4', 4));
+        return 'ret';
+      };
+      syms.forEach(sym => Object.defineProperty(stub, sym, Object.getOwnPropertyDescriptor(realLookup, sym)));
+      dns.lookup = stub;
+      try {
+        collector._wrapDns();
+        expect(dns.lookup).to.not.equal(stub);
+        expect(dns.lookup('h', () => {})).to.equal('ret');
+        expect(await util.promisify(dns.lookup)('h')).to.deep.equal({ address: '1.2.3.4', family: 4 });
+        collector._unwrapDns();
+        expect(dns.lookup).to.equal(stub);
+      } finally {
+        collector._unwrapDns();
+        dns.lookup = realLookup;
+      }
     });
   });
 });

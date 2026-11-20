@@ -1,5 +1,14 @@
 import { expect } from 'chai';
+import sinon from 'sinon';
+const meteorCheck = require('../../helpers/meteorMock.js'); // CJS object config.js reads check from
 import { DEFAULT_CONFIG, validateConfig, mergeConfig } from '../../../lib/config.js';
+
+// The test mock's check() ignores unknown keys; real Meteor check() rejects them.
+function captureCheckPattern() {
+  const stub = sinon.stub(meteorCheck, 'check');
+  validateConfig({ apiKey: 'sk_test_123' });
+  return stub.firstCall.args[1];
+}
 import { resolveEnvConfig } from '../../../lib/env.js';
 
 describe('config', function () {
@@ -28,7 +37,12 @@ describe('config', function () {
       expect(DEFAULT_CONFIG.collectTraces).to.be.a('boolean');
       expect(DEFAULT_CONFIG.collectErrors).to.be.a('boolean');
       expect(DEFAULT_CONFIG.collectLogs).to.be.a('boolean');
-      expect(DEFAULT_CONFIG.collectRUM).to.be.false; // Disabled by default
+    });
+
+    it('drops options nothing implements', function () {
+      for (const key of ['collectRUM', 'traceMethodOperations', 'useWorkerThread', 'workerThreshold']) {
+        expect(DEFAULT_CONFIG, key).to.not.have.property(key);
+      }
     });
   });
 
@@ -98,12 +112,17 @@ describe('config', function () {
     });
 
     it('throws when batchSize < 1', function () {
-      // Note: batchSize=0 is falsy so skips the check in source code.
-      // Use -1 which is truthy and < 1.
       expect(() => validateConfig({
         apiKey: 'sk_test_123',
         batchSize: -1
       })).to.throw('batchSize must be at least 1');
+    });
+
+    it('rejects zero batchSize and flushInterval', function () {
+      expect(() => validateConfig({ apiKey: 'sk_test_123', batchSize: 0 }))
+        .to.throw('batchSize must be at least 1');
+      expect(() => validateConfig({ apiKey: 'sk_test_123', flushInterval: 0 }))
+        .to.throw('flushInterval must be at least 1000ms');
     });
 
     it('throws when flushInterval < 1000', function () {
@@ -111,6 +130,32 @@ describe('config', function () {
         apiKey: 'sk_test_123',
         flushInterval: 500
       })).to.throw('flushInterval must be at least 1000ms');
+    });
+
+    it('accepts the documented HTTP and build options', function () {
+      const pattern = captureCheckPattern();
+      for (const key of ['buildHash', 'httpSampleRate', 'httpRequestsInterval', 'httpExcludePatterns']) {
+        expect(pattern, key).to.have.property(key);
+      }
+    });
+
+    it('accepts every DEFAULT_CONFIG key (mergeConfig validates the merged object)', function () {
+      const pattern = captureCheckPattern();
+      for (const key of Object.keys(DEFAULT_CONFIG)) {
+        expect(pattern, key).to.have.property(key);
+      }
+    });
+
+    it('still accepts removed options so existing settings do not throw', function () {
+      const pattern = captureCheckPattern();
+      for (const key of ['collectRUM', 'traceMethodOperations', 'useWorkerThread', 'workerThreshold']) {
+        expect(pattern, key).to.have.property(key);
+      }
+    });
+
+    it('throws when httpSampleRate out of range', function () {
+      expect(() => validateConfig({ apiKey: 'sk_test_123', httpSampleRate: 1.5 }))
+        .to.throw('httpSampleRate must be between 0 and 1');
     });
 
     it('throws for invalid log levels', function () {

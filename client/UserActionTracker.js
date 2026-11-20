@@ -11,6 +11,8 @@
  * - Configurable action limits to prevent data overload
  */
 
+import stripUrl from './stripUrl';
+
 export default class UserActionTracker {
 	constructor(config = {}) {
 		this.config = {
@@ -26,6 +28,7 @@ export default class UserActionTracker {
 		this.lastClickElement = null;
 		this.clickCount = 0;
 		this.pendingDeadClicks = new Map();
+		this._mutationObserver = null;
 
 		if (this.config.enabled) {
 			this._setupListeners();
@@ -47,8 +50,8 @@ export default class UserActionTracker {
 		document.addEventListener('focus', (e) => this._handleInputFocus(e), true);
 		document.addEventListener('change', (e) => this._handleInputChange(e), true);
 
-		// Track page interactions for dead click detection
-		document.addEventListener('DOMSubtreeModified', () => this._handleDOMChange());
+		// Track page interactions for dead click detection (DOM changes are
+		// observed only while a click is pending, see _setupDeadClickDetection)
 		document.addEventListener('load', () => this._handlePageChange(), true);
 
 		if (this.config.debug) {
@@ -107,7 +110,8 @@ export default class UserActionTracker {
 			type: 'form_submit',
 			timestamp: new Date(),
 			element: elementInfo,
-			formAction: form.action || window.location.href,
+			// form.action can be an element when the form has a field named "action"
+			formAction: stripUrl(form.action) || stripUrl(window.location.href),
 			formMethod: form.method || 'GET'
 		};
 
@@ -190,6 +194,9 @@ export default class UserActionTracker {
 	 * @private
 	 */
 	_setupDeadClickDetection(element, now) {
+		// Without MutationObserver every click would look dead
+		if (typeof MutationObserver === 'undefined') return undefined;
+
 		const deadClickId = `${now}_${Math.random()}`;
 
 		this.pendingDeadClicks.set(deadClickId, {
@@ -197,6 +204,16 @@ export default class UserActionTracker {
 			timestamp: now,
 			detected: false
 		});
+
+		if (!this._mutationObserver && document.body) {
+			this._mutationObserver = new MutationObserver(() => this._handleDOMChange());
+			this._mutationObserver.observe(document.body, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				characterData: true
+			});
+		}
 
 		// Check for DOM changes after delay
 		setTimeout(() => {
@@ -206,6 +223,7 @@ export default class UserActionTracker {
 				this._markDeadClick(deadClickId);
 			}
 			this.pendingDeadClicks.delete(deadClickId);
+			if (this.pendingDeadClicks.size === 0) this._stopObserving();
 		}, this.config.deadClickDelay);
 
 		return deadClickId;
@@ -219,6 +237,19 @@ export default class UserActionTracker {
 		// Mark all pending dead clicks as "not dead" since DOM changed
 		for (const [id, pending] of this.pendingDeadClicks.entries()) {
 			pending.detected = true;
+		}
+		// Every pending click is resolved; the next click re-attaches the observer
+		this._stopObserving();
+	}
+
+	/**
+	 * Disconnect the dead-click MutationObserver
+	 * @private
+	 */
+	_stopObserving() {
+		if (this._mutationObserver) {
+			this._mutationObserver.disconnect();
+			this._mutationObserver = null;
 		}
 	}
 
@@ -268,7 +299,10 @@ export default class UserActionTracker {
 	 * @private
 	 */
 	_getElementText(element) {
-		const text = element.textContent || element.value || element.innerText || '';
+		// Never read form controls: .value holds typed input (passwords included),
+		// and textarea/select textContent holds default text / every option label
+		if (this._isFormElement(element)) return '';
+		const text = element.textContent || element.innerText || '';
 		return text.trim().substring(0, 50);
 	}
 
@@ -378,6 +412,7 @@ export default class UserActionTracker {
 		this.lastClickElement = null;
 		this.clickCount = 0;
 		this.pendingDeadClicks.clear();
+		this._stopObserving();
 
 		if (this.config.debug) {
 			console.log('[SkySignal RUM] UserActionTracker reset');

@@ -210,4 +210,102 @@ describe('PublicationTracer', function () {
       expect(tracer.intervalId).to.be.null;
     });
   });
+
+  // ==========================================
+  // handler-table wrapping
+  // ==========================================
+  describe('_wrapRegisteredPublications', function () {
+    const { Meteor } = require('../../helpers/meteorMock.js');
+    const { publicationContextStore } = require('../../../lib/collectors/LiveQueriesCollector.js');
+    let saved;
+
+    beforeEach(function () {
+      saved = { named: Meteor.server.publish_handlers, universal: Meteor.server.universal_publish_handlers };
+    });
+
+    afterEach(function () {
+      Meteor.server.publish_handlers = saved.named;
+      Meteor.server.universal_publish_handlers = saved.universal;
+    });
+
+    it('wraps publications registered before start, idempotently, with ALS context', function () {
+      let seen = null;
+      const original = function () { seen = publicationContextStore.getStore(); return null; };
+      Meteor.server.publish_handlers = { early: original };
+      Meteor.server.universal_publish_handlers = [function () { seen = publicationContextStore.getStore(); }];
+
+      tracer._wrapRegisteredPublications();
+      const wrapped = Meteor.server.publish_handlers.early;
+      expect(wrapped._skySignalOriginal).to.equal(original);
+      tracer._wrapRegisteredPublications();
+      expect(Meteor.server.publish_handlers.early).to.equal(wrapped);
+
+      wrapped.call({ connection: { id: 'c1' } });
+      expect(seen).to.include({ publicationName: 'early', connectionId: 'c1', isAutoPublish: false });
+
+      Meteor.server.universal_publish_handlers[0].call({ connection: { id: 'c2' } });
+      expect(seen).to.include({ publicationName: null, isAutoPublish: true });
+    });
+
+    it('wraps publications registered later through Meteor.publish (incl. object form) and Meteor.server.publish', function () {
+      const server = Meteor.server;
+      const savedPublish = Meteor.publish;
+      server.publish_handlers = {};
+      server.universal_publish_handlers = [];
+      server.publish = function (name, handler) {
+        if (name && typeof name === 'object') {
+          Object.entries(name).forEach(([k, v]) => this.publish(k, v));
+        } else if (name) {
+          this.publish_handlers[name] = handler;
+        } else {
+          this.universal_publish_handlers.push(handler);
+        }
+      };
+      Meteor.publish = server.publish.bind(server); // bound copy, like ddp-server
+      try {
+        tracer._wrapPublish();
+        Meteor.publish('viaMeteor', function () {});
+        Meteor.publish({ viaObject() {} });
+        server.publish('viaServer', function () {});
+        Meteor.publish(null, function () {});
+        for (const name of ['viaMeteor', 'viaObject', 'viaServer']) {
+          expect(server.publish_handlers[name]._skySignalOriginal, name).to.be.a('function');
+        }
+        expect(server.universal_publish_handlers[0]._skySignalOriginal).to.be.a('function');
+      } finally {
+        Meteor.publish = savedPublish;
+        delete server.publish;
+      }
+    });
+
+    it('reports to the new tracer after stop() → start() (wrappers outlive instances)', function () {
+      const cursor = { _cursorDescription: { collectionName: 'posts', options: {} } };
+      Meteor.server.publish_handlers = { pub: function () { return cursor; } };
+      tracer._wrapped = false;
+      tracer._wrapPublish();
+      tracer.stop();
+
+      const next = new PublicationTracer({ client: mockClient, host: 'test-host' });
+      next._wrapped = false;
+      next._wrapPublish();
+      Meteor.server.publish_handlers.pub.call({ connection: { id: 'c1' } });
+      next.stop();
+
+      expect(next._stats.pub.callCount).to.equal(1);
+      expect(tracer._stats.pub).to.be.undefined;
+    });
+
+    it('analyzes cursors returned by async publish handlers', async function () {
+      const cursor = { _cursorDescription: { collectionName: 'posts', options: {} } };
+      Meteor.server.publish_handlers = { asyncPub: async function () { return cursor; } };
+      tracer._wrapped = true; // make this the active tracer without patching Meteor.publish
+      tracer._wrapPublish();
+      tracer._wrapRegisteredPublications();
+
+      await Meteor.server.publish_handlers.asyncPub.call({ connection: { id: 'c1' } });
+      await new Promise((r) => setImmediate(r));
+      expect(tracer._stats.asyncPub.callCount).to.equal(1);
+      expect(tracer._stats.asyncPub.noProjectionCount).to.equal(1);
+    });
+  });
 });
